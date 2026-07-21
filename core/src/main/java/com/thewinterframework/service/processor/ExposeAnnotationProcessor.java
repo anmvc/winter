@@ -51,6 +51,7 @@ public class ExposeAnnotationProcessor implements WinterAnnotationProcessor {
 				}
 			}
 
+			generateFile(ctx, "generated/ExposeInterfaceTemplate.java", "", elements);
 			generateFile(ctx, "generated/ExposeImplementationTemplate.java", "Default", elements);
 
 			final var pkg = ctx.getPluginPackageString();
