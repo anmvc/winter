@@ -255,16 +255,14 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 	 * Gets the registered modules.
 	 * @return the registered modules.
 	 */
+	@SuppressWarnings({"unchecked", "rawtypes"})
 	public Set<Module> asGuiceModules() {
 		final Set<Module> modules = new HashSet<>(registeredModules.values());
-
 		modules.add(binder -> {
 			for (final var entry : registeredModules.entrySet()) {
-				binder.bind(entry.getKey().asSubclass(PluginModule.class))
-						.toInstance(entry.getValue());
+				binder.bind((Class) entry.getKey()).toInstance(entry.getValue());
 			}
 		});
-
 		return Set.copyOf(modules);
 	}
 
