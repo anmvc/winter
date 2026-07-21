@@ -256,7 +256,16 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 	 * @return the registered modules.
 	 */
 	public Set<Module> asGuiceModules() {
-		return Set.copyOf(registeredModules.values());
+		final Set<Module> modules = new HashSet<>(registeredModules.values());
+
+		modules.add(binder -> {
+			for (final var entry : registeredModules.entrySet()) {
+				binder.bind(entry.getKey().asSubclass(PluginModule.class))
+						.toInstance(entry.getValue());
+			}
+		});
+
+		return Set.copyOf(modules);
 	}
 
 	@NotNull
