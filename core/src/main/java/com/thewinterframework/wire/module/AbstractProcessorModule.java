@@ -29,7 +29,7 @@ public abstract class AbstractProcessorModule implements ProcessorModule {
 			return;
 		}
 
-		final var wiredClass = Class.forName(ClassWireProcessor.canonicalWiredClassName(plugin, moduleAnnotation));
+		final var wiredClass = Class.forName(ClassWireProcessor.canonicalWiredClassName(plugin, moduleAnnotation), true, plugin.getClass().getClassLoader());
 		this.wire = (ClassListWire) wiredClass.getConstructors()[0].newInstance();
 	}
 
