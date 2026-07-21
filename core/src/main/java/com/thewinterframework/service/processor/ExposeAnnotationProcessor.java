@@ -40,12 +40,15 @@ public class ExposeAnnotationProcessor implements WinterAnnotationProcessor {
 
 		try {
 			final var elements = new HashSet<TypeElement>();
-			try (final var is = getClass().getClassLoader().getResourceAsStream("META-INF/winter/exposed-classes.txt")) {
-				final var classNames = readLines(is);
-				for (final var className : classNames) {
-					final var element = ctx.getEnv().getElementUtils().getTypeElement(className);
-					if (element.getKind().isDeclaredType()) {
-						elements.add(element);
+			final var is = getClass().getClassLoader().getResourceAsStream("META-INF/winter/exposed-classes.txt");
+			if (is != null) {
+				try (is) {
+					final var classNames = readLines(is);
+					for (final var className : classNames) {
+						final var element = ctx.getEnv().getElementUtils().getTypeElement(className);
+						if (element.getKind().isDeclaredType()) {
+							elements.add(element);
+						}
 					}
 				}
 			}
