@@ -7,21 +7,21 @@ public interface <PLUGIN>API {
 	<TYPE> get<TYPE_NAME>();
 	</el>
 
-	final class Provider {
+	/**
+	 * Retrieves the instance of the <PLUGIN>API. This method will throw an exception if the instance has not been set yet.
+	 *
+	 * @return The instance of the <PLUGIN>API
+	 * @throws IllegalStateException if the instance has not been set yet
+	 */
+	static <PLUGIN>API getInstance() {
+		Preconditions.checkNotNull(Holder.instance, "<PLUGIN>API instance has not been set yet");
+		return Holder.instance;
+	}
+
+	final class Holder {
 		private static <PLUGIN>API instance;
 
-		private Provider() {}
-
-		/**
-		 * Retrieves the instance of the <PLUGIN>API. This method will throw an exception if the instance has not been set yet.
-		 *
-		 * @return The instance of the <PLUGIN>API
-		 * @throws IllegalStateException if the instance has not been set yet
-		 */
-		public static <PLUGIN>API getInstance() {
-			Preconditions.checkNotNull(instance, "<PLUGIN>API instance has not been set yet");
-			return instance;
-		}
+		private Holder() {}
 
 		/**
 		 * Sets the instance of the <PLUGIN>API. This method should only be called once during plugin initialization.
@@ -29,10 +29,10 @@ public interface <PLUGIN>API {
 		 * @param newInstance The instance of the <PLUGIN>API to set
 		 * @throws IllegalArgumentException if the instance has already been set or if the newInstance is null
 		 */
-		public static void setInstance(final <PLUGIN>API newInstance) {
+		static void setInstance(final <PLUGIN>API newInstance) {
 			Preconditions.checkNotNull(newInstance, "<PLUGIN>API instance cannot be null");
 			Preconditions.checkArgument(instance == null, "<PLUGIN>API instance has already been set");
-			Provider.instance = newInstance;
+			Holder.instance = newInstance;
 		}
 	}
 }
