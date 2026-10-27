@@ -36,12 +36,12 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 	private final DfsGraph<Class<? extends PluginModule>> moduleGraph = new DfsGraph<>();
 	private final Set<Class<? extends PluginModule>> expandedModules = new HashSet<>();
 	private final Set<Class<? extends PluginModule>> expandingModules = new HashSet<>();
-	/** Modules whose load phase completed. */
-	private final Set<Class<? extends PluginModule>> loadedModules = ConcurrentHashMap.newKeySet();
 	/** Modules whose enable phase completed. */
 	private final Set<Class<? extends PluginModule>> enabledModules = ConcurrentHashMap.newKeySet();
 	private ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 	private boolean alreadyLoaded;
+	/** Whether the enable phase was started at least once. */
+	private boolean enableStarted;
 
 	public PluginModuleManager(final WinterPlugin plugin) {
 		this.plugin = plugin;
@@ -102,14 +102,20 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 				if (!registerModule(dependency)) {
 					return registrationFailure(dependency, moduleType);
 				}
-				moduleGraph.addAfter(moduleType, dependency);
+				// A dependency whose load conditions do not match is not registered, it must not be added to the graph
+				// either: the ordering would then contain a module that has no instance to drive.
+				if (registeredModules.containsKey(dependency)) {
+					moduleGraph.addAfter(moduleType, dependency);
+				}
 			}
 
 			for (final var after : module.before(plugin)) {
 				if (!registerModule(after)) {
 					return registrationFailure(after, moduleType);
 				}
-				moduleGraph.addBefore(moduleType, after);
+				if (registeredModules.containsKey(after)) {
+					moduleGraph.addBefore(moduleType, after);
+				}
 			}
 
 			if (ComponentDescriptor.isComponent(moduleType)) {
@@ -120,7 +126,9 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 						if (!registerModule(dependencyType)) {
 							return registrationFailure(dependencyType, moduleType);
 						}
-						moduleGraph.addAfter(moduleType, dependencyType);
+						if (registeredModules.containsKey(dependencyType)) {
+							moduleGraph.addAfter(moduleType, dependencyType);
+						}
 					}
 				}
 				for (final var after : descriptor.before()) {
@@ -129,7 +137,9 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 						if (!registerModule(afterType)) {
 							return registrationFailure(afterType, moduleType);
 						}
-						moduleGraph.addBefore(moduleType, afterType);
+						if (registeredModules.containsKey(afterType)) {
+							moduleGraph.addBefore(moduleType, afterType);
+						}
 					}
 				}
 			}
@@ -162,7 +172,12 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 	}
 
 	public boolean enableModules() {
-		return alreadyLoaded && runModules(ModulePhase.ENABLE, orderedModules());
+		if (!alreadyLoaded) {
+			return false;
+		}
+
+		enableStarted = true;
+		return runModules(ModulePhase.ENABLE, orderedModules());
 	}
 
 	public boolean disableModules() {
@@ -170,9 +185,10 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 			return false;
 		}
 
-		// Modules that never completed their enable phase have nothing to tear down, but a plugin whose enable phase
-		// failed halfway through still has the modules that did complete, so those are the ones to disable.
-		final var completed = enabledModules.isEmpty() ? loadedModules : enabledModules;
+		// Only the modules whose enable phase completed are torn down. A plugin whose enable phase failed halfway
+		// through still has to tear down the modules that were started, while a plugin that failed before the enable
+		// phase (for instance while creating the injector) must not run onDisable on modules that were never enabled.
+		final var completed = enableStarted ? enabledModules : Set.<Class<? extends PluginModule>>of();
 		final var reverse = orderedModules().stream()
 				.filter(completed::contains)
 				.collect(java.util.stream.Collectors.toCollection(ArrayList::new));
@@ -184,7 +200,7 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 		// The platform can enable the plugin again (for instance after a /reload), so the manager has to be able to
 		// walk through its life cycle once more instead of reporting every phase as already executed.
 		alreadyLoaded = false;
-		loadedModules.clear();
+		enableStarted = false;
 		enabledModules.clear();
 		expandedModules.clear();
 		executor = Executors.newVirtualThreadPerTaskExecutor();
@@ -221,8 +237,11 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 
 	private List<Class<? extends PluginModule>> orderedModules() {
 		return moduleGraph.ordered(Comparator
-				.comparingInt(this::moduleOrder)
-				.thenComparing(Class::getName));
+						.comparingInt(this::moduleOrder)
+						.thenComparing(Class::getName))
+				.stream()
+				.filter(registeredModules::containsKey)
+				.toList();
 	}
 
 	private int moduleOrder(final Class<? extends PluginModule> type) {
@@ -299,14 +318,13 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 				return false;
 			}
 
-			// Tracking the completed phases lets the manager tear down exactly the modules that were started, even
-			// when the enable phase failed halfway through.
+			// Tracking the enable phase lets the manager tear down exactly the modules that were started, even when
+			// the enable phase failed halfway through.
 			switch (phase) {
-				case LOAD -> loadedModules.add(moduleType);
 				case ENABLE -> enabledModules.add(moduleType);
-				case DISABLE -> {
-					loadedModules.remove(moduleType);
-					enabledModules.remove(moduleType);
+				case DISABLE -> enabledModules.remove(moduleType);
+				default -> {
+					// The load phase has nothing to tear down: a module becomes tearable once its enable phase ran.
 				}
 			}
 			logger.info("Module '{}' {}", moduleType.getSimpleName(), phase.pastTense);

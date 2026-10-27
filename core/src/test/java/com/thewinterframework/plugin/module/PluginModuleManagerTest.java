@@ -18,7 +18,7 @@ class PluginModuleManagerTest {
 
 	static final List<String> CALLS = new ArrayList<>();
 
-	public static final class RecordingModule implements PluginModule {
+	public static class RecordingModule implements PluginModule {
 		@Override
 		public boolean onLoad(final WinterPlugin plugin) {
 			CALLS.add("load:" + getClass().getSimpleName());
@@ -77,6 +77,19 @@ class PluginModuleManagerTest {
 				"load:RecordingModule", "enable:RecordingModule", "disable:RecordingModule",
 				"load:RecordingModule", "enable:RecordingModule", "disable:RecordingModule"
 		), CALLS);
+	}
+
+	@Test
+	void modulesThatWereOnlyLoadedAreNotTornDown() {
+		CALLS.clear();
+		final var manager = new PluginModuleManager(plugin());
+		assertTrue(manager.registerModule(RecordingModule.class));
+		assertTrue(manager.loadModules());
+
+		// The plugin can fail between the load and the enable phase (creating the injector, for instance), the module
+		// was never enabled so tearing it down would run onDisable on a half initialized module.
+		assertTrue(manager.disableModules());
+		assertFalse(CALLS.contains("disable:RecordingModule"), CALLS.toString());
 	}
 
 	@Test

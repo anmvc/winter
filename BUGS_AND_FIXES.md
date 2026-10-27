@@ -514,16 +514,125 @@ to 2.3.0" — the new code was audited too, against the Velocity API sources and
 
 ---
 
+## 10. Ported to upstream 3.0.0
+
+Upstream `3.0.0` (`861265e`) replaced the per-component-type discovery (`ServiceModule`, `ListenerModule`,
+`ProviderModule`, `ModuleModule`) with the unified component model: `ComponentManager`, `ComponentModule`,
+`ComponentDescriptor`, `ComponentHandler`, `ComponentInterceptor`, `ComponentDecoratorHandler` and
+`ComponentMetadataProcessor`. The branch was merged on top of it and the fixes of sections 2–9 were re-applied to
+the new architecture, where they had been dropped or rewritten by the port:
+
+* `ComponentManager` owns the decorator life cycle again, so `ServiceManager` and `ReloadServiceManager` delegate to
+  it and `getOrCreateDecorator`/`replayLifeCycle`/`overridesOnConfigure` (section 4.1) still replay the phases a
+  handler created on demand missed.
+* `PluginModuleManager` keeps the enabled/loaded tracking, the full re-enable cycle (section 3.1) and the
+  `toInstance` bindings for the module instances it owns.
+* `ExposeInterfaceTemplate`/`ExposeModuleTemplate` keep the `Holder` based generated API (section 1.8), and the
+  `ScheduledAt`/`SingleScheduledAtDecoratorHandler` changes of section 5.2 survive.
+
+The port itself introduced the defects below, all fixed here.
+
+### 10.1 The dependency graph was ordered by a depth-first walk
+
+* **Files:** `core/src/main/java/com/thewinterframework/utils/graph/DfsGraph.java`
+* **Cause:** 3.0.0 rewrote `DfsGraph` as a recursive depth-first traversal that emitted a node after its
+  dependencies. That is a valid topological order, but it is not stable: the produced order depends on the
+  insertion order of the *dependencies* of each node, nodes that could run in parallel were emitted in an order
+  nobody can predict from the code, and the recursion blew the stack on a deep chain. `PluginModuleManager`
+  and `ComponentOrder` both feed user declared `order`/`before`/`after` values into it, so two runs of the same
+  plugin could load the same components in different orders — the exact class of bug section 2.1 was about.
+* **Fix:** the graph is now an iterative Kahn topological sort. `ordered()` keeps the insertion order between the
+  nodes that the constraints leave free (a stable order for a given graph), `ordered(Comparator)` breaks those ties
+  with the caller's comparator (`PluginModuleManager` passes the component `order` and the class name),
+  `dependenciesOf` returns an immutable copy of the *direct* dependencies, `iterator()` follows `ordered()` and a
+  cycle reports the nodes that are still blocked: `IllegalStateException("Cycle detected: a -> b")`.
+* **Tests:** `DfsGraphTest` — insertion order, comparator ordering, direct dependencies, cycles.
+
+### 10.2 Condition evaluation was duplicated and the module gate was lost
+
+* **Files:** `core/src/main/java/com/thewinterframework/wire/condition/Conditions.java` (new),
+  `core/src/main/java/com/thewinterframework/wire/module/AbstractProcessorModule.java`,
+  `core/src/main/java/com/thewinterframework/plugin/module/PluginModuleManager.java`
+* **Cause:** the `@Requires` evaluation lived in `AbstractProcessorModule#evaluateConditions` and was copied
+  nowhere else, so `@ModuleComponent`s lost the LOAD-stage gate section 3.3 added: a module that was not active
+  during the load stage was still instantiated, still contributed its `depends()`/`before()` graph edges and still
+  contributed its Guice bindings.
+* **Fix:** the evaluation moved into `Conditions.matches(element, targetStage, context, injector)`, which both the
+  processor modules and `PluginModuleManager#registerModule` use. A module whose LOAD condition fails is skipped
+  (`debug` line, `registerModule` still reports success, since a conditional module is not an error) and is never
+  registered, instantiated or bound.
+
+### 10.3 A skipped module was still added to the dependency graph
+
+* **Files:** `core/src/main/java/com/thewinterframework/plugin/module/PluginModuleManager.java`
+* **Cause:** `registerModule` adds the graph edge (`addAfter`/`addBefore`) *after* registering the dependency, but a
+  dependency skipped by its LOAD condition returns `true` without being registered. `DfsGraph#addAfter` creates
+  both endpoints, so the skipped module became a node of the graph: it appeared in `orderedModules()` and every
+  phase then threw `IllegalStateException("Module not registered: …")` (or, in `injectModules`, NPE'd on
+  `injectMembers(null)`).
+* **Fix:** graph edges are only added for modules that are actually registered, and `orderedModules()` filters the
+  graph order through the registered modules as a second line of defence.
+
+### 10.4 The provider handler resolved the provided type from the first generic interface
+
+* **Files:** `core/src/main/java/com/thewinterframework/provider/handler/ProviderComponentHandler.java`,
+  `core/src/main/java/com/thewinterframework/provider/ProviderModule.java`
+* **Cause:** section 3.4 fixed this for `ProviderModule`, but the unified component handler introduced by 3.0.0
+  re-implemented it as `providerClass.getGenericInterfaces()[0]`: a provider that extends a base provider (a very
+  common shape) threw `IllegalStateException("… must declare Provider<T> directly")` during the component
+  configuration, and a provider implementing two interfaces resolved whichever one came first. The handler also
+  discarded the resolved `Type` of a type variable.
+* **Fix:** both paths resolve the provided type through the class hierarchy
+  (`TypeLiteral#getSupertype(Provider.class)`), reject a type variable with an actionable message, and the legacy
+  `ProviderModule` keeps the component list so its enable/disable phases still see every provider.
+
+### 10.5 The listener component handler could register the same listener twice
+
+* **Files:** `paper/src/main/java/com/thewinterframework/paper/listener/handler/ListenerComponentHandler.java`
+* **Cause:** `onEnable` called `registerEvents` unconditionally. A component that is enabled twice (a reload that
+  re-enables the plugin, a handler that is replayed by `ComponentManager`) registered the same listener instance
+  twice, so every event was handled twice. `onDisable` also unregistered unconditionally.
+* **Fix:** the handler keeps the listeners it registered in a concurrent set; `onEnable` registers only the ones it
+  does not know yet, `onDisable` unregisters only those.
+
+### 10.6 Modules were torn down even though their enable phase never ran
+
+* **Files:** `core/src/main/java/com/thewinterframework/plugin/module/PluginModuleManager.java`,
+  `velocity/src/main/java/com/thewinterframework/velocity/VelocityWinterPlugin.java`
+* **Cause:** `disableModules()` disabled the *loaded* modules when no module completed its enable phase. That is
+  the right answer when the enable phase failed halfway through, but not when the enable phase never started — a
+  plugin that fails while creating the injector (an unrelated binding error, which is exactly when people need a
+  clean log) ran `onDisable` on modules whose `@Inject` fields were never populated. `VelocityWinterPlugin#shutdown`
+  also skipped the whole disable call when the injector was missing (`modulesLoaded && injector != null`), so the
+  manager kept its executor and its `alreadyLoaded` flag forever.
+* **Fix:** the manager records whether the enable phase started; only the modules whose enable phase completed are
+  disabled, and a plugin that failed before the enable phase just resets the manager (the executor is closed either
+  way). The injector guard in `shutdown()` is gone: the disable phase does not need the injector, and it is the call
+  that releases the manager.
+* **Tests:** `PluginModuleManagerTest#modulesThatWereOnlyLoadedAreNotTornDown` and
+  `onlyTheModulesThatCompletedTheirEnablePhaseAreDisabled`.
+
+### 10.7 New tests for the ported code
+
+* `core/src/test/java/com/thewinterframework/plugin/module/PluginModuleManagerTest` — the injector hands out the
+  module instances the manager drives, a full load/enable/disable cycle can run twice (a `/reload`), and the
+  teardown rules of 10.6.
+* `core/src/test/java/com/thewinterframework/utils/graph/DfsGraphTest` — the ordering contract of 10.1.
+
+---
+
 ## Verification notes
 
 The sandbox used for this review has no JDK compiler and no network access to Maven Central, so the project could
-not be compiled here. Every modified file was parsed with a Java grammar (tree-sitter) — the merged tree is
-130 Java files, and the only complaints are a known false positive on the pattern-matching `switch` labels of
-`ComponentUtils` (reported for the unmodified upstream file as well) and the six `*.java` files under
+not be compiled here. Every modified file was parsed with a Java grammar (tree-sitter) — the tree now holds
+154 Java files, and the only complaints are a known false positive on the pattern-matching `switch` labels of
+`ComponentUtils` (reported for the unmodified upstream file as well) and the seven `*.java` files under
 `src/main/resources/generated`, which are templates full of `<PLACEHOLDER>` tokens and not compilable Java to
-begin with. The whole diff was reviewed by hand for API/typing mistakes, and the ordering logic of `DfsGraph` was
+begin with. Both trees (this branch and `upstream/3.0.0`) hold the same 94 files under
+`core/src/main/java`, and every `import com.thewinterframework.…` of the merged tree resolves to a type that exists. The whole diff was reviewed by hand for API/typing mistakes, and the ordering logic of `DfsGraph` was
 validated with an executable model of the algorithm.
-The merge with 2.3.0 was additionally checked for the classic silent-merge failure modes (duplicated overrides,
+The merge with 3.0.0 followed the same rules: the upstream side was regenerated and compared file by file with
+the branch, and the merge with 2.3.0 was additionally checked for the classic silent-merge failure modes (duplicated overrides,
 duplicated annotations and imports, and duplicated dependency declarations), which found and removed the two
 artifacts mentioned in section 0.
 

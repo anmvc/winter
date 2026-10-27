@@ -105,7 +105,9 @@ public abstract class VelocityWinterPlugin implements WinterPlugin {
 		}
 		stopped = true;
 		try {
-			if (modulesLoaded && injector != null && !moduleManager.disableModules()) {
+			// The disable phase does not need the injector, and it is also the call that releases the manager, so it
+			// must run even when the injector could not be created.
+			if (modulesLoaded && !moduleManager.disableModules()) {
 				logger.error("Failed to disable Winter modules");
 			}
 			if (enabled) {
