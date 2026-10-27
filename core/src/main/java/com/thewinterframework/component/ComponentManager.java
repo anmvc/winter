@@ -38,6 +38,22 @@ public class ComponentManager {
 	private boolean enabled;
 
 	/**
+	 * Clears the state of the previous life cycle.
+	 * <p>
+	 * A reload re-runs the discovery on the same manager, so the decorators and the components of the previous cycle
+	 * must go away: keeping them would call {@code onDiscover} again on handlers that already registered their
+	 * commands, listeners or scheduled tasks, duplicating them on the next enable.
+	 */
+	public synchronized void reset() {
+		decorators.clear();
+		components.clear();
+		plugin = null;
+		loaded = false;
+		configured = false;
+		enabled = false;
+	}
+
+	/**
 	 * Runs admission policies and registers the component only when every policy accepts it.
 	 * Admission happens before decorator discovery and dependency-injection configuration.
 	 *

@@ -612,12 +612,31 @@ The port itself introduced the defects below, all fixed here.
 * **Tests:** `PluginModuleManagerTest#modulesThatWereOnlyLoadedAreNotTornDown` and
   `onlyTheModulesThatCompletedTheirEnablePhaseAreDisabled`.
 
-### 10.7 New tests for the ported code
+### 10.7 The unified component module could not run a second life cycle
+
+* **Files:** `core/src/main/java/com/thewinterframework/component/ComponentModule.java`,
+  `core/src/main/java/com/thewinterframework/component/ComponentManager.java`
+* **Cause:** `ComponentModule` is a module instance that the manager keeps, so a `/reload` (Paper) or a re-enable
+  runs `onLoad`/`onEnable` on the *same* object — but the module closed its `ExecutorService` in `onDisable` and
+  never replaced it, so every `async` component threw `RejectedExecutionException` on the second enable, and the
+  `ComponentManager` it owns was never reset: decorators and components of the previous cycle stayed registered and
+  `onDiscover` ran again on handlers that had already registered their commands, listeners and scheduled tasks
+  (`SchedulerDecoratorHandler`, for instance, appends to a list on every discovery, so the same method was
+  scheduled twice after a reload). `onDisable` also disabled *every* component instead of the ones whose enable
+  phase ran, which re-introduced the bug section 3.2 fixed for `AbstractProcessorModule`.
+* **Fix:** `onLoad` creates a fresh executor and calls the new `ComponentManager#reset()`, which drops the
+  decorators, the components and the phase flags of the previous cycle; the module remembers the components it
+  enabled and only those are disabled.
+* **Tests:** `ServiceManagerTest#resetDropsEverythingThePreviousCycleDiscovered`.
+
+### 10.8 New tests for the ported code
 
 * `core/src/test/java/com/thewinterframework/plugin/module/PluginModuleManagerTest` — the injector hands out the
   module instances the manager drives, a full load/enable/disable cycle can run twice (a `/reload`), and the
   teardown rules of 10.6.
 * `core/src/test/java/com/thewinterframework/utils/graph/DfsGraphTest` — the ordering contract of 10.1.
+* `core/src/test/java/com/thewinterframework/service/ServiceManagerTest#resetDropsEverythingThePreviousCycleDiscovered`
+  — the reload behaviour of 10.7.
 
 ---
 

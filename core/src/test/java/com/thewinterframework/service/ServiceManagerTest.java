@@ -17,6 +17,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -139,6 +140,28 @@ class ServiceManagerTest {
 				() -> manager.getOrCreateHandler(BindingHandler.class));
 
 		assertTrue(exception.getMessage().contains(BindingHandler.class.getName()), exception.getMessage());
+	}
+
+	@Test
+	void resetDropsEverythingThePreviousCycleDiscovered() throws Exception {
+		CALLS.clear();
+		final var manager = new ServiceManager();
+		final var plugin = plugin();
+		manager.registerService(SampleService.class);
+		manager.loadHandlers(plugin);
+		manager.startHandlers(plugin);
+
+		manager.reset();
+
+		// A reload re-runs the discovery on the same manager: keeping the decorators would call onDiscover again on
+		// handlers that already registered their commands, listeners or tasks, duplicating them on the next enable.
+		assertTrue(manager.services().isEmpty(), manager.services().toString());
+		assertNull(manager.getHandler(RecordingHandler.class));
+
+		CALLS.clear();
+		manager.registerService(SampleService.class);
+		assertEquals(1, manager.services().size());
+		assertEquals(List.of("discover:SampleService#start"), CALLS);
 	}
 
 	@Test

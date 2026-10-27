@@ -36,8 +36,10 @@ public final class ComponentModule extends AbstractProcessorModule {
 	private final Map<Class<? extends ComponentHandler>, ComponentHandler> handlers = new LinkedHashMap<>();
 	private final Map<Class<? extends ComponentInterceptor>, ComponentInterceptor> interceptors = new LinkedHashMap<>();
 	private final Set<Class<? extends ComponentInterceptor>> globalInterceptors = new HashSet<>();
-	private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+	private ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 	private List<ComponentDescriptor> components = List.of();
+	/** The components whose enable phase ran, so a reload does not disable the ones that were skipped. */
+	private List<ComponentDescriptor> enabledInCycle = List.of();
 
 	public ComponentModule() {
 		super(Component.class);
@@ -46,6 +48,11 @@ public final class ComponentModule extends AbstractProcessorModule {
 	@Override
 	public boolean onLoad(final WinterPlugin plugin) throws Exception {
 		initWire(plugin);
+
+		// The platform can enable the plugin again (a /reload does exactly that) and the module instance is reused,
+		// so everything that belonged to the previous cycle has to be dropped instead of piling up.
+		executor = Executors.newVirtualThreadPerTaskExecutor();
+		componentManager.reset();
 		discoverExtensions(plugin);
 
 		final var discovered = new ArrayList<ComponentDescriptor>();
@@ -105,6 +112,7 @@ public final class ComponentModule extends AbstractProcessorModule {
 		}
 
 		runPhase(plugin, ComponentPhase.ENABLE, enabled);
+		enabledInCycle = List.copyOf(enabled);
 		componentManager.enableDecorators(plugin);
 		plugin.getSLF4JLogger().info("Enabled {} components", enabled.size());
 		return true;
@@ -114,13 +122,15 @@ public final class ComponentModule extends AbstractProcessorModule {
 	public boolean onDisable(final WinterPlugin plugin) throws Exception {
 		try {
 			componentManager.disableDecorators(plugin);
-			final var reverse = new ArrayList<>(components);
+			// A component whose ENABLE condition failed was never started, so only the enabled ones are torn down.
+			final var reverse = new ArrayList<>(enabledInCycle);
 			java.util.Collections.reverse(reverse);
 			runPhase(plugin, ComponentPhase.DISABLE, reverse);
+			plugin.getSLF4JLogger().info("Disabled {} components", reverse.size());
 		} finally {
+			enabledInCycle = List.of();
 			executor.close();
 		}
-		plugin.getSLF4JLogger().info("Disabled {} components", components.size());
 		return true;
 	}
 
