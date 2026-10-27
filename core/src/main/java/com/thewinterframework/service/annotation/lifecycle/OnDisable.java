@@ -18,8 +18,8 @@ import java.lang.annotation.Target;
 public @interface OnDisable {
 
 	/**
-	 * This indicates the priority of the method.
-	 * @return The classes to call before this method
+	 * The services whose disable methods must be executed after this method.
+	 * @return The services this method is executed before
 	 */
 	Class<?>[] before() default {};
 }

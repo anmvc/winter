@@ -17,17 +17,24 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 
 	private final WinterPlugin plugin;
 	private final Logger logger;
-	
+
 	private final Map<Class<? extends PluginModule>, PluginModule> registeredModules;
 	private final DfsGraph<Class<? extends PluginModule>> moduleGraph;
-	
+
+	/** Modules whose load phase completed, in load order. */
+	private final List<Class<? extends PluginModule>> loadedModules;
+	/** Modules whose enable phase completed, in enable order. */
+	private final List<Class<? extends PluginModule>> enabledModules;
+
 	private boolean alreadyLoaded;
 
 	public PluginModuleManager(final WinterPlugin plugin) {
 		this.plugin = plugin;
 		this.logger = plugin.getSLF4JLogger();
-		this.registeredModules = new HashMap<>();
+		this.registeredModules = new LinkedHashMap<>();
 		this.moduleGraph = new DfsGraph<>();
+		this.loadedModules = new ArrayList<>();
+		this.enabledModules = new ArrayList<>();
 	}
 
 	/**
@@ -107,6 +114,10 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 	 * @return {@code true} if the modules were loaded successfully, {@code false} otherwise.
 	 */
 	public boolean loadModules() {
+		if (alreadyLoaded) {
+			return false;
+		}
+
 		final var start = System.currentTimeMillis();
 		for (final var moduleClass : moduleGraph) {
 			final var module = registeredModules.get(moduleClass);
@@ -121,6 +132,7 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 					return false;
 				}
 
+				loadedModules.add(moduleClass);
 				logger.info("Module '{}' loaded", moduleClass.getSimpleName());
 			} catch (final Exception e) {
 				logger.error("Failed to load module {}", moduleClass.getCanonicalName(), e);
@@ -144,7 +156,7 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 		}
 
 		final var start = System.currentTimeMillis();
-		for (final var moduleClass : moduleGraph) {
+		for (final var moduleClass : loadedModules) {
 			final var module = registeredModules.get(moduleClass);
 			if (module == null) {
 				logger.error("[INJECTION PHASE] Module {} not found", moduleClass.getCanonicalName());
@@ -169,7 +181,11 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 		}
 
 		final var start = System.currentTimeMillis();
-		for (final var moduleClass : moduleGraph) {
+		for (final var moduleClass : loadedModules) {
+			if (enabledModules.contains(moduleClass)) {
+				continue;
+			}
+
 			final var module = registeredModules.get(moduleClass);
 			if (module == null) {
 				logger.error("[ENABLE PHASE] Module {} not found", moduleClass.getCanonicalName());
@@ -182,6 +198,7 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 					return false;
 				}
 
+				enabledModules.add(moduleClass);
 				logger.info("Module '{}' enabled", moduleClass.getSimpleName());
 			} catch (final Exception e) {
 				logger.error("Failed to enable module {}", moduleClass.getCanonicalName(), e);
@@ -194,39 +211,47 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 	}
 
 	/**
-	 * Disables the modules.
+	 * Disables the modules, in the reverse order they were enabled in.
+	 * <p>
+	 * Modules that were only loaded (because the enable phase failed halfway through) are disabled as well, so a
+	 * failed startup does not leave half initialized modules behind.
 	 *
-	 * @return {@code true} if the modules were disabled successfully, {@code false} otherwise.
+	 * @return {@code true} if every module was disabled successfully, {@code false} otherwise.
 	 */
 	public boolean disableModules() {
-		if (!alreadyLoaded) {
-			return false;
-		}
-
 		final var start = System.currentTimeMillis();
-		for (final var moduleClass : moduleGraph) {
+		final var modulesToDisable = new ArrayList<>(enabledModules.isEmpty() ? loadedModules : enabledModules);
+		Collections.reverse(modulesToDisable);
+
+		var success = true;
+		for (final var moduleClass : modulesToDisable) {
 			final var module = registeredModules.get(moduleClass);
 			if (module == null) {
 				logger.error("[DISABLE PHASE] Module {} not found", moduleClass.getCanonicalName());
-				return false;
+				success = false;
+				continue;
 			}
 
 			try {
 				if (!module.onDisable(plugin)) {
 					logger.error("Failed to disable module {}", moduleClass.getCanonicalName());
-					return false;
+					success = false;
+					continue;
 				}
+
+				logger.info("Module '{}' disabled", moduleClass.getSimpleName());
 			} catch (final Exception e) {
 				logger.error("Failed to disable module {}", moduleClass.getCanonicalName(), e);
-				return false;
+				success = false;
 			}
-
-			logger.info("Module '{}' disabled", moduleClass.getSimpleName());
 		}
 
-		logger.info("Disabled modules in {}ms", System.currentTimeMillis() - start);
+		enabledModules.clear();
+		loadedModules.clear();
+		alreadyLoaded = false;
 
-		return true;
+		logger.info("Disabled modules in {}ms", System.currentTimeMillis() - start);
+		return success;
 	}
 
 	/**
@@ -252,11 +277,12 @@ public class PluginModuleManager implements Iterable<Class<? extends PluginModul
 	}
 
 	/**
-	 * Gets the registered modules.
+	 * Gets the registered modules, in registration order.
+	 *
 	 * @return the registered modules.
 	 */
 	public Set<Module> asGuiceModules() {
-		return Set.copyOf(registeredModules.values());
+		return Collections.unmodifiableSet(new LinkedHashSet<>(registeredModules.values()));
 	}
 
 	@NotNull

@@ -10,7 +10,7 @@ import javax.annotation.processing.RoundEnvironment;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.PackageElement;
 import javax.lang.model.util.Elements;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -20,7 +20,8 @@ public class ProcessorContext {
 	private final Element pluginClass;
 	private final RoundEnvironment roundEnv;
 
-	private final Set<String> requiredModules = new HashSet<>();
+	// Insertion ordered so the generated modules list is reproducible between builds.
+	private final Set<String> requiredModules = new LinkedHashSet<>();
 
 	public ProcessorContext(
 			final ProcessingEnvironment env,
@@ -95,6 +96,6 @@ public class ProcessorContext {
 	public Set<String> getRequiredModulesAsClasses() {
 		return requiredModules.stream()
 				.map(module -> module + ".class")
-				.collect(Collectors.toSet());
+				.collect(Collectors.toCollection(LinkedHashSet::new));
 	}
 }

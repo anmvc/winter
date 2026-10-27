@@ -11,15 +11,24 @@ import com.thewinterframework.utils.reflect.ProcessorUtils.ProjectType;
 
 import javax.annotation.processing.*;
 import javax.lang.model.SourceVersion;
+import javax.lang.model.element.Element;
 import javax.lang.model.element.TypeElement;
 import javax.tools.StandardLocation;
+import java.util.Comparator;
 import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.TreeSet;
 
 import static com.thewinterframework.service.processor.ExposeAnnotationProcessor.ELEMENT_PATTERN;
 
+/**
+ * Generates the {@code <PLUGIN>API} interface of a plugin from the classes annotated with {@link Expose}.
+ * <p>
+ * This processor is meant to run in the API project (or in the main project when {@code bypass.api} is
+ * enabled). The generated interface is then implemented by
+ * {@link ExposeAnnotationProcessor} in the implementation project.
+ */
 @AutoService(Processor.class)
-@SupportedSourceVersion(SourceVersion.RELEASE_17)
+@SupportedSourceVersion(SourceVersion.RELEASE_21)
 @SupportedOptions({
 		"plugin.type",
 		"plugin.package",
@@ -28,65 +37,89 @@ import static com.thewinterframework.service.processor.ExposeAnnotationProcessor
 })
 public class ExposeAnnotationProcessorAPI extends AbstractProcessor {
 
+	private static final String EXPOSED_CLASSES_RESOURCE = "META-INF/winter/exposed-classes.txt";
+
+	private boolean alreadyGenerated;
+
 	@Override
 	public boolean process(final Set<? extends TypeElement> annotations, final RoundEnvironment roundEnv) {
 		if (ProcessorUtils.getProjectType(processingEnv) == ProjectType.IMPL && !isAPIBypassed()) {
 			return false;
 		}
 
-		if (roundEnv.processingOver() || annotations.isEmpty()) {
+		if (roundEnv.processingOver() || annotations.isEmpty() || alreadyGenerated) {
 			return false;
 		}
 
-		final var pluginPkg = getPluginPkg(roundEnv);
-		final var pluginName = getPluginName(roundEnv);
+		final Element pluginElement = isAPIBypassed() ? WinterProcessor.getPluginClass(roundEnv, processingEnv) : null;
+		if (isAPIBypassed() && pluginElement == null) {
+			processingEnv.getMessager().printError(
+					"The API generation is bypassed but " + WinterBootPlugin.class.getCanonicalName()
+							+ " annotation was not found in the project!"
+			);
+			return false;
+		}
+
+		final var pluginPkg = getPluginPkg(pluginElement);
+		final var pluginName = getPluginName(pluginElement);
 
 		final var ctx = new ProcessorContext(processingEnv, null, roundEnv);
 
-		final var validElements = roundEnv.getElementsAnnotatedWith(Expose.class).stream()
-				.filter(e -> e.getKind().isDeclaredType())
-				.map(e -> (TypeElement) e)
-				.collect(Collectors.toSet());
+		final var validElements = new TreeSet<TypeElement>(
+				Comparator.comparing(element -> element.getQualifiedName().toString())
+		);
+		for (final var element : roundEnv.getElementsAnnotatedWith(Expose.class)) {
+			// Only types can be exposed, the annotation itself is already restricted to types but a misused
+			// annotation (for instance on a field of a type that is being generated) must not break the build.
+			if (element instanceof final TypeElement typeElement) {
+				validElements.add(typeElement);
+			}
+		}
 
 		if (validElements.isEmpty()) {
 			return false;
 		}
 
-		generateInterface(ctx, pluginPkg, pluginName, validElements);
+		alreadyGenerated = true;
 
+		generateInterface(ctx, pluginPkg, pluginName, validElements);
+		writeExposedClassesFile(validElements);
+
+		return true;
+	}
+
+	private void writeExposedClassesFile(final Iterable<TypeElement> elements) {
 		try {
 			final var builder = new StringBuilder();
-			for (final var element : validElements) {
-				builder.append(element.getQualifiedName().toString()).append("\n");
+			for (final var element : elements) {
+				builder.append(element.getQualifiedName().toString()).append('\n');
 			}
 
-			final var file = processingEnv.getFiler().createResource(StandardLocation.CLASS_OUTPUT, "", "META-INF/winter/exposed-classes.txt");
+			final var file = processingEnv.getFiler()
+					.createResource(StandardLocation.CLASS_OUTPUT, "", EXPOSED_CLASSES_RESOURCE);
 			try (final var writer = file.openWriter()) {
 				writer.write(builder.toString());
 			}
 		} catch (final Exception e) {
 			processingEnv.getMessager().printError("Failed to write exposed classes to file: " + e.getMessage());
-			return false;
 		}
-
-		return true;
 	}
 
 	private boolean isAPIBypassed() {
 		return Boolean.parseBoolean(getOption("bypass.api", "false"));
 	}
 
-	private String getPluginPkg(final RoundEnvironment roundEnv) {
-		if (isAPIBypassed()) {
-			return WinterProcessor.getPluginClass(roundEnv, processingEnv).getClass().getPackageName();
+	private String getPluginPkg(final Element pluginElement) {
+		if (pluginElement != null) {
+			return processingEnv.getElementUtils().getPackageOf(pluginElement).getQualifiedName().toString();
 		}
 
 		return getOption("plugin.package", "com.default.api");
 	}
 
-	private String getPluginName(final RoundEnvironment roundEnv) {
-		if (isAPIBypassed()) {
-			return WinterProcessor.getPluginClass(roundEnv, processingEnv).getSimpleName().toString();
+	private String getPluginName(final Element pluginElement) {
+		if (pluginElement != null) {
+			return pluginElement.getSimpleName().toString();
 		}
 
 		return getOption("plugin.name", "Default");

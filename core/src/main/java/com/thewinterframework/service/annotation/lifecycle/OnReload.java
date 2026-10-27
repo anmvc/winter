@@ -16,14 +16,14 @@ import java.lang.annotation.Target;
 @ServiceDecorator(OnReloadDecoratorHandler.class)
 public @interface OnReload {
 	/**
-	 * The priority of this method. The higher the priority, the earlier it will be executed
-	 * @return The priority of this method
+	 * The services whose reload methods must be executed before this method.
+	 * @return The services this method is executed after
 	 */
 	Class<?>[] after() default {};
 
 	/**
-	 * The priority of this method. The higher the priority, the earlier it will be executed
-	 * @return The priority of this method
+	 * The services whose reload methods must be executed after this method.
+	 * @return The services this method is executed before
 	 */
 	Class<?>[] before() default {};
 }

@@ -12,14 +12,14 @@ public interface LifeCycleMethod {
 	Class<?> service();
 
 	/**
-	 * The services that should be called before this method.
-	 * @return The method
+	 * The services this method must be executed before.
+	 * @return The services this method is executed before
 	 */
 	Class<?>[] before();
 
 	/**
-	 * The services that should be called after this method.
-	 * @return The method
+	 * The services this method must be executed after.
+	 * @return The services this method is executed after
 	 */
 	Class<?>[] after();
 }

@@ -10,9 +10,11 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.AnnotatedElement;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 
 /**
@@ -34,37 +36,57 @@ public class Reflections {
 	@SuppressWarnings("unchecked")
 	public static <T extends Annotation> List<AnnotatedMethodHandle<T>> findMethodsWith(final Class<?> clazz, final Class<T> annotation) throws IllegalAccessException, NoSuchMethodException {
 		final var list = new ArrayList<AnnotatedMethodHandle<T>>();
+		// Overridden methods must be handled once, using the most derived declaration (annotations on methods
+		// are not inherited, a subclass must annotate the method again to be picked up).
+		final var seenSignatures = new HashSet<String>();
 
-		for (final var method : clazz.getDeclaredMethods()) {
-			for (final var methodAnnotation : method.getDeclaredAnnotations()) {
-				final var annotationType = methodAnnotation.annotationType();
-
-				if (annotationType.equals(annotation)) {
-					list.add(new AnnotatedMethodHandle<>(
-							method,
-							MethodHandles.privateLookupIn(clazz, MethodHandles.lookup())
-									.findVirtual(clazz, method.getName(),
-											MethodType.methodType(method.getReturnType(), method.getParameterTypes())),
-							(T) annotationType.cast(methodAnnotation),
-							findMethodParameters(method)
-					));
+		for (var current = clazz; current != null && current != Object.class; current = current.getSuperclass()) {
+			for (final var method : current.getDeclaredMethods()) {
+				if (method.isSynthetic() || method.isBridge() || Modifier.isStatic(method.getModifiers())) {
+					// Static methods cannot be invoked through a virtual method handle.
 					continue;
 				}
 
-				if (annotationType.isAnnotationPresent(annotation)) {
-					list.add(new AnnotatedMethodHandle<>(
-							method,
-							MethodHandles.privateLookupIn(clazz, MethodHandles.lookup())
-									.findVirtual(clazz, method.getName(),
-											MethodType.methodType(method.getReturnType(), method.getParameterTypes())),
-							annotationType.getAnnotation(annotation),
-							findMethodParameters(method)
-					));
+				if (!seenSignatures.add(signature(method))) {
+					continue;
+				}
+
+				for (final var methodAnnotation : method.getDeclaredAnnotations()) {
+					final var annotationType = methodAnnotation.annotationType();
+					final var metaAnnotation = annotationType.getAnnotation(annotation);
+
+					if (annotationType.equals(annotation) || metaAnnotation != null) {
+						list.add(new AnnotatedMethodHandle<>(
+								method,
+								MethodHandles.privateLookupIn(method.getDeclaringClass(), MethodHandles.lookup())
+										.findVirtual(method.getDeclaringClass(), method.getName(),
+												MethodType.methodType(method.getReturnType(), method.getParameterTypes())),
+								annotationType.equals(annotation)
+										? (T) annotationType.cast(methodAnnotation)
+										: metaAnnotation,
+								findMethodParameters(method)
+						));
+					}
 				}
 			}
 		}
 
 		return list;
+	}
+
+	/**
+	 * Builds a signature that identifies a method regardless of the class declaring it.
+	 *
+	 * @param method The method.
+	 * @return The signature of the method.
+	 */
+	private static String signature(final Method method) {
+		final var builder = new StringBuilder(method.getName()).append('(');
+		for (final var parameter : method.getParameterTypes()) {
+			builder.append(parameter.getName()).append(',');
+		}
+
+		return builder.append(')').toString();
 	}
 
 	/**

@@ -14,6 +14,16 @@ subprojects {
         withSourcesJar()
     }
 
+    dependencies {
+        testImplementation(libs.junit.api)
+        testRuntimeOnly(libs.junit.engine)
+        testRuntimeOnly(libs.junit.platform.launcher)
+    }
+
+    tasks.withType<Test>().configureEach {
+        useJUnitPlatform()
+    }
+
     deployer {
         signing {
             key.set(secret("winterSigningKey"))
@@ -50,11 +60,3 @@ repositories {
     mavenCentral()
 }
 
-dependencies {
-    testImplementation(libs.junit.api)
-    testRuntimeOnly(libs.junit.engine)
-}
-
-tasks.getByName<Test>("test") {
-    useJUnitPlatform()
-}

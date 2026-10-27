@@ -1,7 +1,5 @@
 package <PACKAGE>;
 
-import com.google.common.base.Preconditions;
-
 public interface <PLUGIN>API {
 	<el>
 	<TYPE> get<TYPE_NAME>();
@@ -19,8 +17,12 @@ public interface <PLUGIN>API {
 		 * @throws IllegalStateException if the instance has not been set yet
 		 */
 		public static <PLUGIN>API getInstance() {
-			Preconditions.checkNotNull(instance, "<PLUGIN>API instance has not been set yet");
-			return instance;
+			final var current = instance;
+			if (current == null) {
+				throw new IllegalStateException("<PLUGIN>API instance has not been set yet");
+			}
+
+			return current;
 		}
 
 		/**
@@ -30,8 +32,14 @@ public interface <PLUGIN>API {
 		 * @throws IllegalArgumentException if the instance has already been set or if the newInstance is null
 		 */
 		public static void setInstance(final <PLUGIN>API newInstance) {
-			Preconditions.checkNotNull(newInstance, "<PLUGIN>API instance cannot be null");
-			Preconditions.checkArgument(instance == null, "<PLUGIN>API instance has already been set");
+			if (newInstance == null) {
+				throw new IllegalArgumentException("<PLUGIN>API instance cannot be null");
+			}
+
+			if (instance != null) {
+				throw new IllegalArgumentException("<PLUGIN>API instance has already been set");
+			}
+
 			Provider.instance = newInstance;
 		}
 	}

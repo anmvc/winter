@@ -11,12 +11,12 @@ import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.TypeElement;
 import java.lang.annotation.Annotation;
 import java.util.Collection;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Set;
 
 public abstract class ClassWireProcessor implements WinterAnnotationProcessor {
 
-	private final Collection<String> classes = new HashSet<>();
+	private final Collection<String> classes = new LinkedHashSet<>();
 
 	protected ProcessingEnvironment env;
 
@@ -47,9 +47,15 @@ public abstract class ClassWireProcessor implements WinterAnnotationProcessor {
 	@Override
 	public void handle(final TypeElement annotation, final Set<? extends Element> elements, final ProcessorContext ctx) {
 		for (final var e : elements) {
-			if (e.getKind() != ElementKind.CLASS) continue;
+			// Classes, enums and records can be components, interfaces (and annotation types) cannot be
+			// instantiated, so they must never end up in the generated class list.
+			final var kind = e.getKind();
+			if (!kind.isClass() && kind != ElementKind.ENUM && kind != ElementKind.RECORD) continue;
+			if (!(e instanceof final TypeElement typeElement)) continue;
 			if (!filter(annotation, e, ctx)) continue;
-			classes.add(e.asType().toString() + ".class");
+			// getQualifiedName is used instead of asType(), a generic type would otherwise be written with its
+			// type arguments, which is not a valid class literal.
+			classes.add(typeElement.getQualifiedName().toString() + ".class");
 		}
 	}
 
@@ -57,6 +63,7 @@ public abstract class ClassWireProcessor implements WinterAnnotationProcessor {
 	public void onProcessingComplete(final ProcessorContext ctx) {
 		final var className = wiredClassName(wiredAnnotation());
 		final var packageName = ctx.getWinterModulePackageString();
-		WinterProcessor.writeClassWire(ctx, className, packageName, classes);
+		// Sorted: the elements of a round are not ordered, the generated source must be reproducible.
+		WinterProcessor.writeClassWire(ctx, className, packageName, classes.stream().sorted().toList());
 	}
 }

@@ -9,8 +9,9 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.lang.annotation.Annotation;
-import java.util.HashMap;
-import java.util.HashSet;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
@@ -19,8 +20,16 @@ import java.util.Set;
  */
 public class ServiceManager {
 
-	private final Map<Class<? extends ServiceDecoratorHandler<?>>, ServiceDecoratorHandler<?>> handlers = new HashMap<>();
-	private final Set<Class<?>> registeredServices = new HashSet<>();
+	// Insertion ordered: handlers are notified in the order their decorators were first discovered.
+	private final Map<Class<? extends ServiceDecoratorHandler<?>>, ServiceDecoratorHandler<?>> handlers = new LinkedHashMap<>();
+	private final Set<Class<?>> registeredServices = new LinkedHashSet<>();
+
+	// The phases already completed, so a handler created after them (handlers are created lazily) can catch up
+	// instead of silently missing the callbacks.
+	private WinterPlugin plugin;
+	private boolean loaded;
+	private boolean enabled;
+	private boolean configured;
 
 	/**
 	 * Register a service with the service manager.
@@ -28,7 +37,7 @@ public class ServiceManager {
 	 * @param service The service to register.
 	 */
 	@SuppressWarnings("unchecked")
-	public void registerService(final @NotNull Class<?> service) throws IllegalAccessException, NoSuchMethodException {
+	public synchronized void registerService(final @NotNull Class<?> service) throws IllegalAccessException, NoSuchMethodException {
 		final var serviceDecorators = Reflections.findClassAnnotations(service, ServiceDecorator.class);
 		for (final var decoratorAnnotation : serviceDecorators) {
 			final var serviceDecorator = decoratorAnnotation.annotationType().getAnnotation(ServiceDecorator.class);
@@ -54,7 +63,10 @@ public class ServiceManager {
 	 *
 	 * @param plugin The plugin to load handlers for.
 	 */
-	public void loadHandlers(final WinterPlugin plugin) {
+	public synchronized void loadHandlers(final WinterPlugin plugin) {
+		this.plugin = plugin;
+		this.loaded = true;
+
 		for (final var handler : handlers.values()) {
 			handler.onPluginLoad(plugin);
 		}
@@ -65,7 +77,9 @@ public class ServiceManager {
 	 *
 	 * @param binder The binder to configure handlers with.
 	 */
-	public void configureHandlers(final Binder binder) {
+	public synchronized void configureHandlers(final Binder binder) {
+		this.configured = true;
+
 		for (final var handler : handlers.values()) {
 			handler.onConfigure(binder);
 		}
@@ -76,7 +90,10 @@ public class ServiceManager {
 	 *
 	 * @param plugin The plugin to start handlers for.
 	 */
-	public void startHandlers(final WinterPlugin plugin) {
+	public synchronized void startHandlers(final WinterPlugin plugin) {
+		this.plugin = plugin;
+		this.enabled = true;
+
 		for (final var handler : handlers.values()) {
 			handler.onPluginEnable(plugin);
 		}
@@ -87,10 +104,12 @@ public class ServiceManager {
 	 *
 	 * @param plugin The plugin to stop handlers for.
 	 */
-	public void stopHandlers(final WinterPlugin plugin) {
+	public synchronized void stopHandlers(final WinterPlugin plugin) {
 		for (final var handler : handlers.values()) {
 			handler.onPluginDisable(plugin);
 		}
+
+		this.enabled = false;
 	}
 
 	/**
@@ -101,7 +120,7 @@ public class ServiceManager {
 	 * @return The handler instance or null if not found.
 	 */
 	@Nullable
-	public <T extends ServiceDecoratorHandler<?>> T getHandler(final Class<T> handlerClass) {
+	public synchronized <T extends ServiceDecoratorHandler<?>> T getHandler(final Class<T> handlerClass) {
 		final var handler = handlers.get(handlerClass);
 		if (handler == null) {
 			return null;
@@ -111,12 +130,69 @@ public class ServiceManager {
 	}
 
 	/**
+	 * Gets the handler of the given class, creating (and keeping) a new instance when no component used it yet.
+	 * <p>
+	 * Handlers are normally created lazily, when a component using the decorator is discovered, so asking for a
+	 * handler of a decorator that is not used by any component would otherwise return {@code null} even though
+	 * the handler is perfectly usable (for instance to have programmatic reload methods registered).
+	 *
+	 * @param handlerClass The handler class.
+	 * @param <T>          The type of the handler.
+	 * @return The handler instance, never {@code null}.
+	 */
+	@NotNull
+	public synchronized <T extends ServiceDecoratorHandler<?>> T getOrCreateHandler(final Class<T> handlerClass) {
+		final var existing = handlers.get(handlerClass);
+		if (existing != null) {
+			return handlerClass.cast(existing);
+		}
+
+		final var created = createInstance(handlerClass);
+		handlers.put(handlerClass, created);
+		replayLifeCycle(created);
+		return created;
+	}
+
+	/**
+	 * Replays the phases a handler created after them missed, so a handler that is created on demand (instead of
+	 * while scanning the components) behaves exactly like the ones that were discovered up front.
+	 *
+	 * @param handler the newly created handler
+	 */
+	private void replayLifeCycle(final ServiceDecoratorHandler<?> handler) {
+		if (configured && overridesOnConfigure(handler.getClass())) {
+			// The Guice binder is only usable while the injector is being created: bindings requested after that
+			// point would be silently dropped, which is far worse to debug than an explicit failure.
+			throw new IllegalStateException(
+					"Service decorator handler " + handler.getClass().getName() + " was created after the injector was "
+							+ "configured and cannot add bindings anymore, make sure at least one component uses its decorator"
+			);
+		}
+
+		if (loaded && plugin != null) {
+			handler.onPluginLoad(plugin);
+		}
+
+		if (enabled && plugin != null) {
+			handler.onPluginEnable(plugin);
+		}
+	}
+
+	private static boolean overridesOnConfigure(final Class<?> handlerClass) {
+		try {
+			return handlerClass.getMethod("onConfigure", Binder.class).getDeclaringClass() != ServiceDecoratorHandler.class;
+		} catch (final NoSuchMethodException e) {
+			return false;
+		}
+	}
+
+	/**
 	 * Get the services.
 	 *
 	 * @return The services.
 	 */
-	public Set<Class<?>> services() {
-		return registeredServices;
+	public synchronized Set<Class<?>> services() {
+		return Collections.unmodifiableSet(new LinkedHashSet<>(registeredServices));
 	}
 
 	/**

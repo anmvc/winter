@@ -30,6 +30,15 @@ dependencies {
 
     // Expression Language
     implementation(libs.commons.jexl3)
+
+    // Tests: the dependencies above are compile-only, so they must be on the test runtime classpath as well
+    // to be able to exercise the classes using them.
+    testImplementation(libs.adventure)
+    testImplementation(libs.minimessage)
+    testImplementation(libs.kyori.text)
+    testImplementation(libs.kyori.legacy)
+    testImplementation(libs.guava)
+    testImplementation(libs.commons.jexl3)
 }
 
 java {
