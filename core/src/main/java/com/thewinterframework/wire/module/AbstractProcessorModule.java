@@ -6,7 +6,7 @@ import com.thewinterframework.plugin.module.Stage;
 import com.thewinterframework.processor.clazz.ClassWireProcessor;
 import com.thewinterframework.processor.module.ProcessorModule;
 import com.thewinterframework.processor.wire.ClassListWire;
-import com.thewinterframework.wire.condition.annotation.Requires;
+import com.thewinterframework.wire.condition.Conditions;
 import com.thewinterframework.wire.condition.context.ConditionContext;
 
 import java.lang.annotation.Annotation;
@@ -39,22 +39,7 @@ public abstract class AbstractProcessorModule implements ProcessorModule {
 	}
 
 	protected boolean evaluateConditions(final AnnotatedElement componentClass, final Stage targetStage, final ConditionContext context, final Injector injector) throws Exception {
-		for (final var annotation : componentClass.getAnnotations()) {
-			final var conditional = annotation.annotationType().getAnnotation(Requires.class);
-			if (conditional != null) {
-				final var componentClazz = conditional.value();
-				final var conditionEvaluator = targetStage == Stage.LOAD ?
-						componentClazz.getDeclaredConstructor().newInstance() :
-						injector.getInstance(componentClazz);
-
-				if (conditionEvaluator.getStage() == targetStage) {
-					if (!conditionEvaluator.matches(context, annotation)) {
-						return false;
-					}
-				}
-			}
-		}
-		return true;
+		return Conditions.matches(componentClass, targetStage, context, injector);
 	}
 
 	protected void registerComponent(final WinterPlugin plugin, final Class<?> componentClass) throws Exception {

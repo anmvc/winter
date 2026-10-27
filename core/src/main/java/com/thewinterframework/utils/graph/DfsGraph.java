@@ -2,116 +2,130 @@ package com.thewinterframework.utils.graph;
 
 import org.jetbrains.annotations.NotNull;
 
-import java.util.*;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.PriorityQueue;
+import java.util.Queue;
+import java.util.Set;
 
 /**
- * A simple directed graph implementation using Depth-First Search (DFS) for topological sorting.
- * This class allows adding nodes and dependencies, and provides an ordered list of nodes
- * based on their dependencies.
- * <p>
- * Both the nodes and the dependencies keep their insertion order, so the resulting order is stable
- * (and therefore reproducible) for a given graph, instead of depending on the hash of the nodes.
+ * Directed dependency graph with deterministic topological ordering.
  *
- * @param <T> the type of nodes in the graph
+ * <p>Both the nodes and their dependencies keep their insertion order, so the default ordering is stable for a given
+ * graph. Callers that need their own tie breaking (for instance a component {@code order}) can pass a comparator.</p>
+ *
+ * @param <T> node type
  */
 public class DfsGraph<T> implements Iterable<T> {
 
-	/** Map to store the dependencies of each node */
 	private final Map<T, Set<T>> dependencies = new LinkedHashMap<>();
 
-	/** Adds a node to the graph
-	 * @param node the node to be added
-	 */
 	public void addNode(final T node) {
-		dependencies.computeIfAbsent(node, k -> new LinkedHashSet<>());
+		dependencies.computeIfAbsent(node, unused -> new LinkedHashSet<>());
 	}
 
-	/**
-	 * Adds a dependency indicating that 'after' should come after 'before'
-	 * @param after - the node that comes after
-	 * @param before - the node that comes before
-	 */
+	/** Declares that {@code after} depends on {@code before}. */
 	public void addAfter(final T after, final T before) {
 		addNode(after);
 		addNode(before);
 		dependencies.get(after).add(before);
 	}
 
-	/**
-	 * Adds a dependency indicating that 'before' should come before 'after'
-	 * @param before - the node that comes before
-	 * @param after - the node that comes after
-	 */
+	/** Declares that {@code before} must precede {@code after}. */
 	public void addBefore(final T before, final T after) {
 		addAfter(after, before);
 	}
 
 	/**
-	 * Returns a list of nodes ordered based on their dependencies using DFS.
-	 * <p>
-	 * Every node is preceded by the nodes it depends on (a topological order), for example a node added with
-	 * {@code addAfter(module, dependency)} comes after {@code dependency} and a node added with
-	 * {@code addBefore(before, module)} comes after {@code before}.
+	 * Returns a topological order that keeps the insertion order of the nodes when nothing forces them apart.
 	 *
-	 * @return a list of nodes in topological order
-	 * @throws IllegalStateException if a cycle is detected in the graph
+	 * @return the ordered nodes
+	 * @throws IllegalStateException if the graph contains a cycle
 	 */
 	public List<T> ordered() {
-		final var order = new ArrayList<T>();
-		final var visited = new HashSet<T>();
-		final var visiting = new LinkedHashSet<T>();
+		final var graph = flatten();
+		final var ready = new ArrayDeque<T>();
+		graph.inDegree().forEach((node, degree) -> {
+			if (degree == 0) {
+				ready.add(node);
+			}
+		});
+		return drain(graph.inDegree(), graph.dependents(), ready);
+	}
 
-		for (final var node : dependencies.keySet()) {
-			if (!visited.contains(node)) {
-				if (!dfs(node, visited, visiting, order)) {
-					throw new IllegalStateException("Cycle detected: " + String.join(" -> ", visiting.stream().map(String::valueOf).toList()));
+	/**
+	 * Returns a deterministic topological order using the comparator to decide between the nodes that are ready.
+	 *
+	 * @param comparator the comparator used to order the nodes that could be visited next
+	 * @return the ordered nodes
+	 * @throws IllegalStateException if the graph contains a cycle
+	 */
+	public List<T> ordered(final Comparator<? super T> comparator) {
+		final var graph = flatten();
+		final var ready = new PriorityQueue<T>(comparator);
+		graph.inDegree().forEach((node, degree) -> {
+			if (degree == 0) {
+				ready.add(node);
+			}
+		});
+		return drain(graph.inDegree(), graph.dependents(), ready);
+	}
+
+	private Flattened<T> flatten() {
+		final var inDegree = new LinkedHashMap<T, Integer>();
+		final var dependents = new LinkedHashMap<T, Set<T>>();
+
+		for (final var entry : dependencies.entrySet()) {
+			inDegree.put(entry.getKey(), entry.getValue().size());
+			dependents.computeIfAbsent(entry.getKey(), unused -> new LinkedHashSet<>());
+			for (final var dependency : entry.getValue()) {
+				dependents.computeIfAbsent(dependency, unused -> new LinkedHashSet<>()).add(entry.getKey());
+			}
+		}
+
+		return new Flattened<>(inDegree, dependents);
+	}
+
+	private List<T> drain(final Map<T, Integer> inDegree, final Map<T, Set<T>> dependents, final Queue<T> ready) {
+		final var order = new ArrayList<T>(inDegree.size());
+
+		while (!ready.isEmpty()) {
+			final var node = ready.remove();
+			order.add(node);
+			for (final var dependent : dependents.getOrDefault(node, Set.of())) {
+				final var remaining = inDegree.compute(dependent, (unused, degree) -> degree - 1);
+				if (remaining == 0) {
+					ready.add(dependent);
 				}
 			}
 		}
 
-		// The nodes are added to the order after their dependencies have been visited, so the list already is a
-		// valid topological order: reversing it (as it used to be done) would return the dependents first.
-		return order;
-	}
-
-	/**
-	 * Depth-First Search helper method for topological sorting.
-	 * @param node the current node being visited
-	 * @param visited set of already visited nodes
-	 * @param visiting set of nodes currently being visited (to detect cycles)
-	 * @param order list to store the topological order
-	 * @return true if successful, false if a cycle is detected
-	 */
-	private boolean dfs(
-			final T node,
-			final Set<T> visited,
-			final Set<T> visiting,
-			final List<T> order
-	) {
-		visiting.add(node);
-
-		for (final var dep : dependencies.getOrDefault(node, Set.of())) {
-			if (visiting.contains(dep)) {
-				return false; // cycle found
-			}
-
-			if (!visited.contains(dep) && !dfs(dep, visited, visiting, order)) {
-				return false;
-			}
+		if (order.size() != inDegree.size()) {
+			final var cycle = inDegree.entrySet().stream()
+					.filter(entry -> entry.getValue() > 0)
+					.map(entry -> String.valueOf(entry.getKey()))
+					.sorted()
+					.toList();
+			throw new IllegalStateException("Cycle detected: " + String.join(" -> ", cycle));
 		}
 
-		visiting.remove(node);
-		visited.add(node);
-		order.add(node);
-		return true;
+		return List.copyOf(order);
 	}
 
-	/**
-	 * Returns an iterator over the nodes in topological order.
-	 * @return an iterator of nodes
-	 */
+	public Set<T> dependenciesOf(final T node) {
+		return Set.copyOf(dependencies.getOrDefault(node, Set.of()));
+	}
+
 	@Override
-	public @NotNull Iterator<T> iterator() {
+	public @NotNull java.util.Iterator<T> iterator() {
 		return ordered().iterator();
+	}
+
+	private record Flattened<T>(Map<T, Integer> inDegree, Map<T, Set<T>> dependents) {
 	}
 }

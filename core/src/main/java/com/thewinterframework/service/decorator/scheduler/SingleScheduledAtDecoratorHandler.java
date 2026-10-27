@@ -7,23 +7,22 @@ import com.thewinterframework.utils.reflect.AnnotatedMethodHandle;
 
 import java.util.List;
 
-/**
- * Handles a single {@link ScheduledAt} annotation.
- * <p>
- * Java does not wrap a single repetition of a repeatable annotation in its container, therefore a method annotated
- * with only one {@link ScheduledAt} is never seen through {@link com.thewinterframework.service.annotation.scheduler.ScheduledAtContainer}
- * and needs its own decorator handler.
- */
-public class SingleScheduledAtDecoratorHandler extends SchedulerDecoratorHandler<ScheduledAt> {
+/** Handles the non-container form of a repeatable {@link ScheduledAt} annotation. */
+public final class SingleScheduledAtDecoratorHandler extends SchedulerDecoratorHandler<ScheduledAt> {
 
 	@Override
-	protected SchedulerMethod map(final Class<?> service, final ScheduledAt annotation, final AnnotatedMethodHandle<ScheduledAt> method) {
-		return new ScheduledAtMethod(service, method, List.of(new ScheduledAtMethod.ScheduledAtTime(
+	protected SchedulerMethod map(
+			final Class<?> component,
+			final ScheduledAt annotation,
+			final AnnotatedMethodHandle<ScheduledAt> method
+	) {
+		final var schedule = new ScheduledAtMethod.ScheduledAtTime(
 				annotation.hour(),
 				annotation.minute(),
 				annotation.second(),
 				annotation.async()
-		)));
+		);
+		return new ScheduledAtMethod(component, method, List.of(schedule));
 	}
 
 	@Override

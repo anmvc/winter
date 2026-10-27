@@ -1,309 +1,369 @@
 package com.thewinterframework.plugin.module;
 
 import com.google.inject.Module;
+import com.thewinterframework.component.meta.ComponentDescriptor;
 import com.thewinterframework.plugin.WinterPlugin;
 import com.thewinterframework.processor.WinterProcessor;
 import com.thewinterframework.utils.graph.DfsGraph;
+import com.thewinterframework.wire.condition.Conditions;
+import com.thewinterframework.wire.condition.context.ConditionContext;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-/**
- * <p> This class is responsible for scanning, registering, loading, enabling, and disabling plugin modules. </p>
- */
+/** Discovers and executes plugin modules in dependency order. */
 public class PluginModuleManager implements Iterable<Class<? extends PluginModule>> {
 
 	private final WinterPlugin plugin;
 	private final Logger logger;
-
-	private final Map<Class<? extends PluginModule>, PluginModule> registeredModules;
-	private final DfsGraph<Class<? extends PluginModule>> moduleGraph;
-
-	/** Modules whose load phase completed, in load order. */
-	private final List<Class<? extends PluginModule>> loadedModules;
-	/** Modules whose enable phase completed, in enable order. */
-	private final List<Class<? extends PluginModule>> enabledModules;
-
+	private final Map<Class<? extends PluginModule>, PluginModule> registeredModules = new LinkedHashMap<>();
+	private final DfsGraph<Class<? extends PluginModule>> moduleGraph = new DfsGraph<>();
+	private final Set<Class<? extends PluginModule>> expandedModules = new HashSet<>();
+	private final Set<Class<? extends PluginModule>> expandingModules = new HashSet<>();
+	/** Modules whose load phase completed. */
+	private final Set<Class<? extends PluginModule>> loadedModules = ConcurrentHashMap.newKeySet();
+	/** Modules whose enable phase completed. */
+	private final Set<Class<? extends PluginModule>> enabledModules = ConcurrentHashMap.newKeySet();
+	private ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 	private boolean alreadyLoaded;
 
 	public PluginModuleManager(final WinterPlugin plugin) {
 		this.plugin = plugin;
 		this.logger = plugin.getSLF4JLogger();
-		this.registeredModules = new LinkedHashMap<>();
-		this.moduleGraph = new DfsGraph<>();
-		this.loadedModules = new ArrayList<>();
-		this.enabledModules = new ArrayList<>();
 	}
 
-	/**
-	 * Scans the modules for the plugin.
-	 *
-	 * @return {@code true} if the modules were scanned successfully, {@code false} otherwise.
-	 */
+	@SuppressWarnings("unchecked")
 	public boolean scanModules() {
 		if (alreadyLoaded) {
 			return false;
 		}
 
 		try {
-			final var moduleProvider = WinterProcessor.getModuleProvider(plugin);
-			final var providers = moduleProvider.getWiredClasses();
+			final var providers = WinterProcessor.getModuleProvider(plugin).getWiredClasses();
 			for (final var provider : providers) {
 				if (!registerModule((Class<? extends PluginModule>) provider)) {
 					logger.error("Failed to register module {}", provider.getCanonicalName());
 					return false;
 				}
 			}
-
 			logger.info("Scanned {} modules", providers.size());
 			return true;
-		} catch (final Exception e) {
-			logger.error("Failed to scan modules", e);
+		} catch (final Exception exception) {
+			logger.error("Failed to scan modules", exception);
 			return false;
 		}
 	}
 
-	/**
-	 * Registers the given module.
-	 *
-	 * @param module the module to register.
-	 * @return {@code true} if the module was registered successfully, {@code false} otherwise.
-	 */
-	public boolean registerModule(final Class<? extends PluginModule> module) {
+	@SuppressWarnings("unchecked")
+	public boolean registerModule(final Class<? extends PluginModule> moduleType) {
 		if (alreadyLoaded) {
 			return false;
 		}
 
-		var registeredModule = registeredModules.get(module);
-		if (registeredModule == null) {
-			registeredModule = createInstance(module);
-			if (registeredModule == null) {
-				return false;
-			}
-
-			registeredModules.put(module, registeredModule);
-			moduleGraph.addNode(module);
+		if (!loadStageConditionsMatch(moduleType)) {
+			// A module that is not active during the load stage must not be registered, otherwise its dependencies and
+			// its bindings would be loaded unconditionally.
+			logger.debug("Skipped LOAD (condition failed) for {}", moduleType.getSimpleName());
+			return true;
 		}
 
-		for (final var dependency : registeredModule.depends(plugin)) {
-			if (!registerModule(dependency)) {
-				logger.error("Failed to register dependency {} for module {}", dependency.getCanonicalName(), module.getCanonicalName());
-				return false;
-			}
-
-			moduleGraph.addAfter(module, dependency);
-		}
-
-		for (final var before : registeredModule.before(plugin)) {
-			if (!registerModule(before)) {
-				logger.error("Failed to register module {} before module {}", before.getCanonicalName(), module.getCanonicalName());
-				return false;
-			}
-
-			moduleGraph.addBefore(before, module);
-		}
-
-		return true;
-	}
-
-	/**
-	 * Loads the registered modules.
-	 *
-	 * @return {@code true} if the modules were loaded successfully, {@code false} otherwise.
-	 */
-	public boolean loadModules() {
-		if (alreadyLoaded) {
-			return false;
-		}
-
-		final var start = System.currentTimeMillis();
-		for (final var moduleClass : moduleGraph) {
-			final var module = registeredModules.get(moduleClass);
+		var module = registeredModules.get(moduleType);
+		if (module == null) {
+			module = createInstance(moduleType);
 			if (module == null) {
-				logger.error("[LOAD PHASE] Module {} not found", moduleClass.getCanonicalName());
 				return false;
 			}
-
-			try {
-				if (!module.onLoad(plugin)) {
-					logger.error("Failed to load module {}", moduleClass.getCanonicalName());
-					return false;
-				}
-
-				loadedModules.add(moduleClass);
-				logger.info("Module '{}' loaded", moduleClass.getSimpleName());
-			} catch (final Exception e) {
-				logger.error("Failed to load module {}", moduleClass.getCanonicalName(), e);
-				return false;
-			}
+			registeredModules.put(moduleType, module);
+			moduleGraph.addNode(moduleType);
 		}
 
+		if (expandedModules.contains(moduleType) || !expandingModules.add(moduleType)) {
+			return true;
+		}
+
+		try {
+			for (final var dependency : module.depends(plugin)) {
+				if (!registerModule(dependency)) {
+					return registrationFailure(dependency, moduleType);
+				}
+				moduleGraph.addAfter(moduleType, dependency);
+			}
+
+			for (final var after : module.before(plugin)) {
+				if (!registerModule(after)) {
+					return registrationFailure(after, moduleType);
+				}
+				moduleGraph.addBefore(moduleType, after);
+			}
+
+			if (ComponentDescriptor.isComponent(moduleType)) {
+				final var descriptor = ComponentDescriptor.from(moduleType);
+				for (final var dependency : descriptor.after()) {
+					if (PluginModule.class.isAssignableFrom(dependency)) {
+						final var dependencyType = (Class<? extends PluginModule>) dependency;
+						if (!registerModule(dependencyType)) {
+							return registrationFailure(dependencyType, moduleType);
+						}
+						moduleGraph.addAfter(moduleType, dependencyType);
+					}
+				}
+				for (final var after : descriptor.before()) {
+					if (PluginModule.class.isAssignableFrom(after)) {
+						final var afterType = (Class<? extends PluginModule>) after;
+						if (!registerModule(afterType)) {
+							return registrationFailure(afterType, moduleType);
+						}
+						moduleGraph.addBefore(moduleType, afterType);
+					}
+				}
+			}
+
+			expandedModules.add(moduleType);
+			return true;
+		} finally {
+			expandingModules.remove(moduleType);
+		}
+	}
+
+	public boolean loadModules() {
+		if (!runModules(ModulePhase.LOAD, orderedModules())) {
+			return false;
+		}
 		alreadyLoaded = true;
-		logger.info("Loaded modules in {}ms", System.currentTimeMillis() - start);
 		return true;
 	}
 
-	/**
-	 * Injects the modules.
-	 *
-	 * @return {@code true} if the modules were injected successfully, {@code false} otherwise.
-	 */
 	public boolean injectModules() {
 		if (!alreadyLoaded) {
 			return false;
 		}
-
 		final var start = System.currentTimeMillis();
-		for (final var moduleClass : loadedModules) {
-			final var module = registeredModules.get(moduleClass);
-			if (module == null) {
-				logger.error("[INJECTION PHASE] Module {} not found", moduleClass.getCanonicalName());
-				return false;
-			}
-
-			plugin.getInjector().injectMembers(module);
+		for (final var moduleType : orderedModules()) {
+			plugin.getInjector().injectMembers(registeredModules.get(moduleType));
 		}
-
 		logger.info("Injected modules in {}ms", System.currentTimeMillis() - start);
 		return true;
 	}
 
-	/**
-	 * Enables the modules.
-	 *
-	 * @return {@code true} if the modules were enabled successfully, {@code false} otherwise.
-	 */
 	public boolean enableModules() {
+		return alreadyLoaded && runModules(ModulePhase.ENABLE, orderedModules());
+	}
+
+	public boolean disableModules() {
 		if (!alreadyLoaded) {
 			return false;
 		}
 
-		final var start = System.currentTimeMillis();
-		for (final var moduleClass : loadedModules) {
-			if (enabledModules.contains(moduleClass)) {
-				continue;
-			}
+		// Modules that never completed their enable phase have nothing to tear down, but a plugin whose enable phase
+		// failed halfway through still has the modules that did complete, so those are the ones to disable.
+		final var completed = enabledModules.isEmpty() ? loadedModules : enabledModules;
+		final var reverse = orderedModules().stream()
+				.filter(completed::contains)
+				.collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+		Collections.reverse(reverse);
 
-			final var module = registeredModules.get(moduleClass);
-			if (module == null) {
-				logger.error("[ENABLE PHASE] Module {} not found", moduleClass.getCanonicalName());
-				return false;
-			}
+		final var result = runModules(ModulePhase.DISABLE, reverse);
+		executor.close();
 
-			try {
-				if (!module.onEnable(plugin)) {
-					logger.error("Failed to enable module {}", moduleClass.getCanonicalName());
-					return false;
-				}
-
-				enabledModules.add(moduleClass);
-				logger.info("Module '{}' enabled", moduleClass.getSimpleName());
-			} catch (final Exception e) {
-				logger.error("Failed to enable module {}", moduleClass.getCanonicalName(), e);
-				return false;
-			}
-		}
-
-		logger.info("Enabled modules in {}ms", System.currentTimeMillis() - start);
-		return true;
-	}
-
-	/**
-	 * Disables the modules, in the reverse order they were enabled in.
-	 * <p>
-	 * Modules that were only loaded (because the enable phase failed halfway through) are disabled as well, so a
-	 * failed startup does not leave half initialized modules behind.
-	 *
-	 * @return {@code true} if every module was disabled successfully, {@code false} otherwise.
-	 */
-	public boolean disableModules() {
-		final var start = System.currentTimeMillis();
-		final var modulesToDisable = new ArrayList<>(enabledModules.isEmpty() ? loadedModules : enabledModules);
-		Collections.reverse(modulesToDisable);
-
-		var success = true;
-		for (final var moduleClass : modulesToDisable) {
-			final var module = registeredModules.get(moduleClass);
-			if (module == null) {
-				logger.error("[DISABLE PHASE] Module {} not found", moduleClass.getCanonicalName());
-				success = false;
-				continue;
-			}
-
-			try {
-				if (!module.onDisable(plugin)) {
-					logger.error("Failed to disable module {}", moduleClass.getCanonicalName());
-					success = false;
-					continue;
-				}
-
-				logger.info("Module '{}' disabled", moduleClass.getSimpleName());
-			} catch (final Exception e) {
-				logger.error("Failed to disable module {}", moduleClass.getCanonicalName(), e);
-				success = false;
-			}
-		}
-
-		enabledModules.clear();
-		loadedModules.clear();
+		// The platform can enable the plugin again (for instance after a /reload), so the manager has to be able to
+		// walk through its life cycle once more instead of reporting every phase as already executed.
 		alreadyLoaded = false;
-
-		logger.info("Disabled modules in {}ms", System.currentTimeMillis() - start);
-		return success;
+		loadedModules.clear();
+		enabledModules.clear();
+		expandedModules.clear();
+		executor = Executors.newVirtualThreadPerTaskExecutor();
+		return result;
 	}
 
-	/**
-	 * Checks if the given module is registered.
-	 *
-	 * @param clazz the module class to check.
-	 * @return {@code true} if the module is registered, {@code false} otherwise.
-	 */
-	public boolean isRegistered(final Class<? extends PluginModule> clazz) {
-		return registeredModules.containsKey(clazz);
+	public boolean isRegistered(final Class<? extends PluginModule> type) {
+		return registeredModules.containsKey(type);
 	}
 
-	/**
-	 * Gets the module of the given class.
-	 *
-	 * @param clazz the module class to get.
-	 * @param <T>   the type of the module.
-	 * @return the module of the given class, or {@code null} if the module is not registered.
-	 */
 	@Nullable
-	public <T extends PluginModule> T getModule(final Class<T> clazz) {
-		return clazz.cast(registeredModules.get(clazz));
+	public <T extends PluginModule> T getModule(final Class<T> type) {
+		return type.cast(registeredModules.get(type));
 	}
 
-	/**
-	 * Gets the registered modules, in registration order.
-	 *
-	 * @return the registered modules.
-	 */
+	@SuppressWarnings({"rawtypes", "unchecked"})
 	public Set<Module> asGuiceModules() {
-		return Collections.unmodifiableSet(new LinkedHashSet<>(registeredModules.values()));
+		final Set<Module> modules = new LinkedHashSet<>(registeredModules.values());
+		// The manager owns the module instances, so the injector has to hand out those instances instead of creating a
+		// second one through a JIT binding whose life cycle nobody drives.
+		modules.add(binder -> {
+			for (final var entry : registeredModules.entrySet()) {
+				binder.bind((Class) entry.getKey()).toInstance(entry.getValue());
+			}
+		});
+		return Collections.unmodifiableSet(modules);
 	}
 
 	@NotNull
 	@Override
 	public Iterator<Class<? extends PluginModule>> iterator() {
-		return moduleGraph.iterator();
+		return orderedModules().iterator();
+	}
+
+	private List<Class<? extends PluginModule>> orderedModules() {
+		return moduleGraph.ordered(Comparator
+				.comparingInt(this::moduleOrder)
+				.thenComparing(Class::getName));
+	}
+
+	private int moduleOrder(final Class<? extends PluginModule> type) {
+		return ComponentDescriptor.isComponent(type) ? ComponentDescriptor.from(type).order() : 0;
+	}
+
+	private boolean isAsync(final Class<? extends PluginModule> type) {
+		return ComponentDescriptor.isComponent(type) && ComponentDescriptor.from(type).async();
+	}
+
+	private boolean runModules(
+			final ModulePhase phase,
+			final List<Class<? extends PluginModule>> ordered
+	) {
+		final var start = System.currentTimeMillis();
+		final var completion = new HashMap<Class<? extends PluginModule>, CompletableFuture<Boolean>>();
+
+		try {
+			for (final var moduleType : ordered) {
+				final var dependencies = moduleGraph.dependenciesOf(moduleType).stream()
+						.map(completion::get)
+						.filter(java.util.Objects::nonNull)
+						.toArray(CompletableFuture[]::new);
+				final var ready = CompletableFuture.allOf(dependencies);
+				final CompletableFuture<Boolean> result;
+				if (isAsync(moduleType) && phase != ModulePhase.DISABLE) {
+					result = ready.thenApplyAsync(
+							unused -> dependenciesSucceeded(dependencies) && invokeModule(phase, moduleType),
+							executor
+					);
+				} else {
+					ready.join();
+					result = CompletableFuture.completedFuture(
+							dependenciesSucceeded(dependencies) && invokeModule(phase, moduleType)
+					);
+				}
+				completion.put(moduleType, result);
+			}
+
+			final var successful = CompletableFuture.allOf(completion.values().toArray(CompletableFuture[]::new))
+					.thenApply(unused -> completion.values().stream().allMatch(CompletableFuture::join))
+					.join();
+			logger.info("{} modules in {}ms", phase.pastTense, System.currentTimeMillis() - start);
+			return successful;
+		} catch (final CompletionException exception) {
+			logger.error("Failed to {} modules", phase.action, exception.getCause());
+			return false;
+		}
+	}
+
+	private boolean dependenciesSucceeded(final CompletableFuture<?>[] dependencies) {
+		for (final var dependency : dependencies) {
+			if (!Boolean.TRUE.equals(dependency.join())) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private boolean invokeModule(final ModulePhase phase, final Class<? extends PluginModule> moduleType) {
+		final var module = registeredModules.get(moduleType);
+		if (module == null) {
+			throw new IllegalStateException("Module not registered: " + moduleType.getName());
+		}
+
+		try {
+			final var successful = switch (phase) {
+				case LOAD -> module.onLoad(plugin);
+				case ENABLE -> module.onEnable(plugin);
+				case DISABLE -> module.onDisable(plugin);
+			};
+			if (!successful) {
+				logger.error("Module '{}' failed to {}", moduleType.getSimpleName(), phase.action);
+				return false;
+			}
+
+			// Tracking the completed phases lets the manager tear down exactly the modules that were started, even
+			// when the enable phase failed halfway through.
+			switch (phase) {
+				case LOAD -> loadedModules.add(moduleType);
+				case ENABLE -> enabledModules.add(moduleType);
+				case DISABLE -> {
+					loadedModules.remove(moduleType);
+					enabledModules.remove(moduleType);
+				}
+			}
+			logger.info("Module '{}' {}", moduleType.getSimpleName(), phase.pastTense);
+			return true;
+		} catch (final Exception exception) {
+			throw new CompletionException("Failed to " + phase.action + " module " + moduleType.getName(), exception);
+		}
 	}
 
 	/**
-	 * Creates an instance of the given class.
+	 * Evaluates the load stage conditions of a module.
 	 *
-	 * @param clazz the class to create an instance of.
-	 * @param <T>   the type of the class.
-	 * @return an instance of the given class.
+	 * @param moduleType the module class
+	 * @return {@code true} when the module is active during the load stage
 	 */
-	private <T> T createInstance(final Class<T> clazz) {
+	private boolean loadStageConditionsMatch(final Class<? extends PluginModule> moduleType) {
 		try {
-			return clazz.getDeclaredConstructor().newInstance();
-		} catch (final Exception e) {
-			logger.error("Failed to create instance of module {}", clazz.getName(), e);
+			return Conditions.matches(
+					moduleType,
+					Stage.LOAD,
+					new ConditionContext(plugin, moduleType),
+					null
+			);
+		} catch (final Exception exception) {
+			logger.error("Failed to evaluate the load conditions of module {}", moduleType.getName(), exception);
+			return false;
+		}
+	}
+
+	private boolean registrationFailure(
+			final Class<? extends PluginModule> dependency,
+			final Class<? extends PluginModule> owner
+	) {
+		logger.error("Failed to register module {} required by {}", dependency.getCanonicalName(), owner.getCanonicalName());
+		return false;
+	}
+
+	private <T> T createInstance(final Class<T> type) {
+		try {
+			return type.getDeclaredConstructor().newInstance();
+		} catch (final Exception exception) {
+			logger.error("Failed to create module {}", type.getName(), exception);
 			return null;
+		}
+	}
+
+	private enum ModulePhase {
+		LOAD("load", "loaded"),
+		ENABLE("enable", "enabled"),
+		DISABLE("disable", "disabled");
+
+		private final String action;
+		private final String pastTense;
+
+		ModulePhase(final String action, final String pastTense) {
+			this.action = action;
+			this.pastTense = pastTense;
 		}
 	}
 }

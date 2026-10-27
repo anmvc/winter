@@ -8,7 +8,7 @@ public class ExposeAPIModule implements ProcessorModule {
 	@Override
 	public boolean onEnable(final WinterPlugin plugin) {
 		final var apiImpl = plugin.getInjector().getInstance(<PACKAGE>.Default<PLUGIN>API.class);
-        <PACKAGE>.<PLUGIN>API.Provider.setInstance(apiImpl);
+        <PACKAGE>.<PLUGIN>API.Holder.setInstance(apiImpl);
 		return true;
 	}
 }

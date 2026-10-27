@@ -44,7 +44,31 @@ class DfsGraphTest {
 		graph.addNode("a");
 		graph.addNode("c");
 
+		// The default order is stable: independent nodes are returned in the order they were added.
 		assertEquals(List.of("b", "a", "c"), graph.ordered());
+	}
+
+	@Test
+	void aCustomComparatorDecidesBetweenIndependentNodes() {
+		final var graph = new DfsGraph<String>();
+		graph.addAfter("module", "dependency");
+		graph.addNode("z");
+		graph.addNode("a");
+
+		assertEquals(List.of("dependency", "module", "z", "a"), graph.ordered((left, right) -> {
+			final var rank = List.of("dependency", "module", "z", "a");
+			return Integer.compare(rank.indexOf(left), rank.indexOf(right));
+		}));
+	}
+
+	@Test
+	void dependenciesOfReturnsTheDirectDependencies() {
+		final var graph = new DfsGraph<String>();
+		graph.addAfter("module", "database");
+		graph.addAfter("module", "configuration");
+
+		assertEquals(java.util.Set.of("database", "configuration"), graph.dependenciesOf("module"));
+		assertTrue(graph.dependenciesOf("configuration").isEmpty());
 	}
 
 	@Test

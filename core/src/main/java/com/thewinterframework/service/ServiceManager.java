@@ -1,213 +1,64 @@
 package com.thewinterframework.service;
 
 import com.google.inject.Binder;
+import com.thewinterframework.component.ComponentManager;
+import com.thewinterframework.component.meta.ComponentDescriptor;
 import com.thewinterframework.plugin.WinterPlugin;
-import com.thewinterframework.service.decorator.ServiceDecorator;
 import com.thewinterframework.service.decorator.ServiceDecoratorHandler;
-import com.thewinterframework.utils.reflect.Reflections;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.lang.annotation.Annotation;
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
- * <p> This class is responsible for managing services. </p>
+ * Compatibility facade for the pre-3.0 service registry.
+ *
+ * @deprecated Inject {@link ComponentManager} instead.
  */
-public class ServiceManager {
+@Deprecated(forRemoval = false)
+public class ServiceManager extends ComponentManager {
 
-	// Insertion ordered: handlers are notified in the order their decorators were first discovered.
-	private final Map<Class<? extends ServiceDecoratorHandler<?>>, ServiceDecoratorHandler<?>> handlers = new LinkedHashMap<>();
-	private final Set<Class<?>> registeredServices = new LinkedHashSet<>();
-
-	// The phases already completed, so a handler created after them (handlers are created lazily) can catch up
-	// instead of silently missing the callbacks.
-	private WinterPlugin plugin;
-	private boolean loaded;
-	private boolean enabled;
-	private boolean configured;
-
-	/**
-	 * Register a service with the service manager.
-	 *
-	 * @param service The service to register.
-	 */
-	@SuppressWarnings("unchecked")
-	public synchronized void registerService(final @NotNull Class<?> service) throws IllegalAccessException, NoSuchMethodException {
-		final var serviceDecorators = Reflections.findClassAnnotations(service, ServiceDecorator.class);
-		for (final var decoratorAnnotation : serviceDecorators) {
-			final var serviceDecorator = decoratorAnnotation.annotationType().getAnnotation(ServiceDecorator.class);
-			final var handler = (ServiceDecoratorHandler<Annotation>) handlers.computeIfAbsent(serviceDecorator.value(), this::createInstance);
-			handler.onDiscoverOnType(service, decoratorAnnotation);
-		}
-
-		final var methodServiceDecorators = Reflections.findMethodsWith(service, ServiceDecorator.class);
-		for (final var serviceDecoratorMethod : methodServiceDecorators) {
-			final var decoratorAnnotation = serviceDecoratorMethod.annotation();
-			final var handlerClass = decoratorAnnotation.value();
-
-			final var handler = (ServiceDecoratorHandler<Annotation>) handlers.computeIfAbsent(handlerClass, this::createInstance);
-			final var annotatedMethod = serviceDecoratorMethod.annotatedWith(handler.getAnnotationType());
-			handler.onDiscover(service, annotatedMethod);
-		}
-
-		registeredServices.add(service);
+	public void registerService(final @NotNull Class<?> service) throws ReflectiveOperationException {
+		registerComponent(ComponentDescriptor.from(service));
 	}
 
-	/**
-	 * Load all plugin service handlers.
-	 *
-	 * @param plugin The plugin to load handlers for.
-	 */
-	public synchronized void loadHandlers(final WinterPlugin plugin) {
-		this.plugin = plugin;
-		this.loaded = true;
-
-		for (final var handler : handlers.values()) {
-			handler.onPluginLoad(plugin);
-		}
+	public void loadHandlers(final WinterPlugin plugin) {
+		loadDecorators(plugin);
 	}
 
-	/**
-	 * Configure all plugin service handlers.
-	 *
-	 * @param binder The binder to configure handlers with.
-	 */
-	public synchronized void configureHandlers(final Binder binder) {
-		this.configured = true;
-
-		for (final var handler : handlers.values()) {
-			handler.onConfigure(binder);
-		}
+	public void configureHandlers(final Binder binder) {
+		configureDecorators(binder);
 	}
 
-	/**
-	 * Start all plugin service handlers.
-	 *
-	 * @param plugin The plugin to start handlers for.
-	 */
-	public synchronized void startHandlers(final WinterPlugin plugin) {
-		this.plugin = plugin;
-		this.enabled = true;
-
-		for (final var handler : handlers.values()) {
-			handler.onPluginEnable(plugin);
-		}
+	public void startHandlers(final WinterPlugin plugin) {
+		enableDecorators(plugin);
 	}
 
-	/**
-	 * Stop all plugin service handlers.
-	 *
-	 * @param plugin The plugin to stop handlers for.
-	 */
-	public synchronized void stopHandlers(final WinterPlugin plugin) {
-		for (final var handler : handlers.values()) {
-			handler.onPluginDisable(plugin);
-		}
-
-		this.enabled = false;
+	public void stopHandlers(final WinterPlugin plugin) {
+		disableDecorators(plugin);
 	}
 
-	/**
-	 * Get a handler by its class.
-	 *
-	 * @param handlerClass The handler class.
-	 * @param <T>          The type of the handler.
-	 * @return The handler instance or null if not found.
-	 */
 	@Nullable
-	public synchronized <T extends ServiceDecoratorHandler<?>> T getHandler(final Class<T> handlerClass) {
-		final var handler = handlers.get(handlerClass);
-		if (handler == null) {
-			return null;
-		}
-
-		return handlerClass.cast(handler);
+	public <T extends ServiceDecoratorHandler<?>> T getHandler(final Class<T> handlerType) {
+		return getDecorator(handlerType);
 	}
 
 	/**
-	 * Gets the handler of the given class, creating (and keeping) a new instance when no component used it yet.
-	 * <p>
-	 * Handlers are normally created lazily, when a component using the decorator is discovered, so asking for a
-	 * handler of a decorator that is not used by any component would otherwise return {@code null} even though
-	 * the handler is perfectly usable (for instance to have programmatic reload methods registered).
+	 * Gets the handler of the given type, creating it when no component used its decorator yet.
 	 *
-	 * @param handlerClass The handler class.
-	 * @param <T>          The type of the handler.
-	 * @return The handler instance, never {@code null}.
+	 * @param handlerType the decorator handler class
+	 * @param <T>         the type of the decorator handler
+	 * @return the handler, never {@code null}
+	 * @deprecated use {@link ComponentManager#getOrCreateDecorator(Class)}
 	 */
+	@Deprecated(forRemoval = false)
 	@NotNull
-	public synchronized <T extends ServiceDecoratorHandler<?>> T getOrCreateHandler(final Class<T> handlerClass) {
-		final var existing = handlers.get(handlerClass);
-		if (existing != null) {
-			return handlerClass.cast(existing);
-		}
-
-		final var created = createInstance(handlerClass);
-		handlers.put(handlerClass, created);
-		replayLifeCycle(created);
-		return created;
+	public <T extends ServiceDecoratorHandler<?>> T getOrCreateHandler(final Class<T> handlerType) {
+		return getOrCreateDecorator(handlerType);
 	}
 
-	/**
-	 * Replays the phases a handler created after them missed, so a handler that is created on demand (instead of
-	 * while scanning the components) behaves exactly like the ones that were discovered up front.
-	 *
-	 * @param handler the newly created handler
-	 */
-	private void replayLifeCycle(final ServiceDecoratorHandler<?> handler) {
-		if (configured && overridesOnConfigure(handler.getClass())) {
-			// The Guice binder is only usable while the injector is being created: bindings requested after that
-			// point would be silently dropped, which is far worse to debug than an explicit failure.
-			throw new IllegalStateException(
-					"Service decorator handler " + handler.getClass().getName() + " was created after the injector was "
-							+ "configured and cannot add bindings anymore, make sure at least one component uses its decorator"
-			);
-		}
-
-		if (loaded && plugin != null) {
-			handler.onPluginLoad(plugin);
-		}
-
-		if (enabled && plugin != null) {
-			handler.onPluginEnable(plugin);
-		}
+	public Set<Class<?>> services() {
+		return components().stream().map(ComponentDescriptor::type).collect(Collectors.toUnmodifiableSet());
 	}
-
-	private static boolean overridesOnConfigure(final Class<?> handlerClass) {
-		try {
-			return handlerClass.getMethod("onConfigure", Binder.class).getDeclaringClass() != ServiceDecoratorHandler.class;
-		} catch (final NoSuchMethodException e) {
-			return false;
-		}
-	}
-
-	/**
-	 * Get the services.
-	 *
-	 * @return The services.
-	 */
-	public synchronized Set<Class<?>> services() {
-		return Collections.unmodifiableSet(new LinkedHashSet<>(registeredServices));
-	}
-
-	/**
-	 * Creates an instance of the given class.
-	 *
-	 * @param clazz the class to create an instance of.
-	 * @param <T>   the type of the class.
-	 * @return an instance of the given class.
-	 */
-	private <T> T createInstance(final Class<T> clazz) {
-		try {
-			return clazz.getDeclaredConstructor().newInstance();
-		} catch (final Exception e) {
-			throw new RuntimeException(e);
-		}
-	}
-
 }
