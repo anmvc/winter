@@ -18,7 +18,10 @@ class ConverterRegistryTest {
 		String sound();
 	}
 
-	static final class Dog implements Animal, Named {
+	interface Pet extends Animal {
+	}
+
+	static final class Dog implements Animal, Pet, Named {
 		@Override
 		public String sound() {
 			return "woof";
@@ -64,13 +67,21 @@ class ConverterRegistryTest {
 	@Test
 	void theClosestConverterWins() {
 		final var registry = new ConverterRegistry();
-		// The super type converter is registered last on purpose, the resolution must not depend on the
-		// registration order.
-		registry.register(Integer.class, String.class, value -> "integer");
+		// Broader types are registered first on purpose: a naive registration-order scan would match Number (or
+		// Animal) first instead of picking the most specific converter.
 		registry.register(Number.class, String.class, value -> "number");
+		registry.register(Integer.class, String.class, value -> "integer");
 
 		assertEquals("integer", registry.convert(42, String.class));
 		assertEquals("number", registry.convert(42.5, String.class));
+
+		final var interfaceHierarchy = new ConverterRegistry();
+		interfaceHierarchy.register(Animal.class, String.class, value -> "animal");
+		interfaceHierarchy.register(Pet.class, String.class, value -> "pet");
+		assertEquals("pet", interfaceHierarchy.convert(new Dog(), String.class));
+
+		interfaceHierarchy.register(Dog.class, String.class, value -> "dog-class");
+		assertEquals("dog-class", interfaceHierarchy.convert(new Dog(), String.class));
 	}
 
 	@Test

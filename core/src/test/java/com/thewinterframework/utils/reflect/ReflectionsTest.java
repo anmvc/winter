@@ -6,8 +6,12 @@ import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ReflectionsTest {
@@ -15,28 +19,39 @@ class ReflectionsTest {
 	@Retention(RetentionPolicy.RUNTIME)
 	@Target({ElementType.METHOD, ElementType.TYPE, ElementType.ANNOTATION_TYPE})
 	@interface Marker {
+		String value() default "";
 	}
 
 	@Retention(RetentionPolicy.RUNTIME)
 	@Target(ElementType.TYPE)
-	@Marker
+	@Marker("type")
 	@interface TypeMarker {
 	}
 
 	@Retention(RetentionPolicy.RUNTIME)
 	@Target(ElementType.METHOD)
-	@Marker
+	@Marker("meta")
 	@interface MetaMarker {
 	}
 
 	static class Parent {
 
-		@Marker
+		@Marker("parent")
 		public void overridden() {
 		}
 
-		@Marker
-		public void parentOnly() {
+		@Marker("parent")
+		public void unannotatedOverride() {
+		}
+
+		@Marker("inherited")
+		public String parentOnly() {
+			return "from-parent";
+		}
+
+		@Marker("parent-private")
+		private void privateHook(final List<String> calls) {
+			calls.add("parent-private");
 		}
 
 		@Marker
@@ -47,8 +62,17 @@ class ReflectionsTest {
 	static class Child extends Parent {
 
 		@Override
-		@Marker
+		@Marker("child")
 		public void overridden() {
+		}
+
+		@Override
+		public void unannotatedOverride() {
+		}
+
+		@Marker("child-private")
+		private void privateHook(final List<String> calls) {
+			calls.add("child-private");
 		}
 
 		@MetaMarker
@@ -60,19 +84,40 @@ class ReflectionsTest {
 	}
 
 	@Test
-	void overriddenMethodsAreFoundOnce() throws Exception {
+	void overriddenMethodsUseTheMostDerivedDeclaration() throws Exception {
 		final var methods = Reflections.findMethodsWith(Child.class, Marker.class);
 
-		final var overridden = methods.stream().filter(m -> m.reflect().getName().equals("overridden")).count();
-		assertEquals(1L, overridden);
+		final var overridden = methods.stream().filter(m -> m.reflect().getName().equals("overridden")).toList();
+		assertEquals(1, overridden.size());
+		assertEquals(Child.class, overridden.getFirst().reflect().getDeclaringClass());
+		assertEquals("child", overridden.getFirst().annotation().value());
+
+		// Overriding a method without repeating the annotation suppresses the parent declaration.
+		assertFalse(methods.stream().anyMatch(m -> m.reflect().getName().equals("unannotatedOverride")));
 	}
 
 	@Test
-	void inheritedMethodsAreFound() throws Exception {
+	void inheritedAndPrivateSuperclassMethodsAreFoundAndInvocable() throws Throwable {
 		final var methods = Reflections.findMethodsWith(Child.class, Marker.class);
-		final var names = methods.stream().map(m -> m.reflect().getName()).toList();
+		final var parentOnly = methods.stream()
+				.filter(m -> m.reflect().getName().equals("parentOnly"))
+				.findFirst();
 
-		assertTrue(names.contains("parentOnly"), names.toString());
+		assertTrue(parentOnly.isPresent(), methods.toString());
+		assertEquals("from-parent", parentOnly.get().handle().invokeWithArguments(new Child()));
+
+		// Private methods are not virtual overrides, so both Child and Parent hooks must remain discoverable.
+		final var privateHooks = methods.stream()
+				.filter(m -> m.reflect().getName().equals("privateHook"))
+				.toList();
+		assertEquals(2, privateHooks.size());
+
+		final var calls = new ArrayList<String>();
+		final var instance = new Child();
+		for (final var hook : privateHooks) {
+			hook.handle().invokeWithArguments(instance, calls);
+		}
+		assertEquals(List.of("child-private", "parent-private"), calls);
 	}
 
 	@Test
@@ -80,7 +125,7 @@ class ReflectionsTest {
 		final var methods = Reflections.findMethodsWith(Child.class, Marker.class);
 		final var names = methods.stream().map(m -> m.reflect().getName()).toList();
 
-		assertTrue(!names.contains("staticMethod"), names.toString());
+		assertFalse(names.contains("staticMethod"), names.toString());
 	}
 
 	@Test
@@ -92,7 +137,8 @@ class ReflectionsTest {
 
 		assertTrue(meta.isPresent(), methods.toString());
 		// The handle exposes the meta annotation, the actual annotation is retrieved with annotatedWith(...).
-		assertTrue(meta.get().annotation() instanceof Marker);
+		assertEquals("meta", meta.get().annotation().value());
+		assertInstanceOf(MetaMarker.class, meta.get().annotatedWith(MetaMarker.class).annotation());
 	}
 
 	@Test
@@ -100,7 +146,7 @@ class ReflectionsTest {
 		final var methods = Reflections.findMethodsWith(Child.class, Marker.class);
 		final var names = methods.stream().map(m -> m.reflect().getName()).toList();
 
-		assertTrue(!names.contains("notAnnotated"), names.toString());
+		assertFalse(names.contains("notAnnotated"), names.toString());
 	}
 
 	@TypeMarker
@@ -112,7 +158,7 @@ class ReflectionsTest {
 		final var annotations = Reflections.findClassAnnotations(AnnotatedChild.class, Marker.class);
 
 		assertEquals(1, annotations.size());
-		assertTrue(annotations.get(0) instanceof TypeMarker);
+		assertInstanceOf(TypeMarker.class, annotations.getFirst());
 	}
 
 	@Test

@@ -66,16 +66,32 @@ class VelocityPluginSchedulerTest {
 	@Test
 	void cancelAllTasksSurvivesATaskLookupTheProxyRejects() {
 		// Velocity throws for plugins it no longer knows about; cancelation runs from the shutdown path and must not
-		// replace the failure that triggered it.
-		final var rejectingScheduler = VelocityTestEnvironment.stub(Scheduler.class, (proxy, method, args) -> {
-			throw new IllegalArgumentException("plugin is not registered");
+		// replace the failure that triggered it, while still clearing Winter's local task id map.
+		final var environment = new VelocityTestEnvironment();
+		final var unregistered = new java.util.concurrent.atomic.AtomicBoolean();
+		final var delegatingScheduler = VelocityTestEnvironment.stub(Scheduler.class, (proxy, method, args) -> switch (method.getName()) {
+			case "buildTask" -> environment.scheduler.buildTask(args[0], (Runnable) args[1]);
+			case "tasksByPlugin" -> {
+				if (unregistered.get()) {
+					throw new IllegalArgumentException("plugin is not registered");
+				}
+				yield environment.scheduler.tasksByPlugin(args[0]);
+			}
+			default -> throw new UnsupportedOperationException(method.toString());
 		});
 		final var server = VelocityTestEnvironment.stub(ProxyServer.class, (proxy, method, args) -> switch (method.getName()) {
-			case "getScheduler" -> rejectingScheduler;
+			case "getScheduler" -> delegatingScheduler;
 			default -> throw new UnsupportedOperationException(method.toString());
 		});
 		final var scheduler = new VelocityPluginScheduler(new Object(), server);
+		final var id = scheduler.runDelayedSync(() -> {}, 1, TimeUnit.SECONDS);
+
+		unregistered.set(true);
 		assertDoesNotThrow(scheduler::cancelAllTasks);
+
+		// Because cancelAllTasks cleared the local id map in finally, a later cancelTask(id) must be a no-op.
+		scheduler.cancelTask(id);
+		assertFalse(environment.tasks.getFirst().cancelled);
 	}
 
 	@Test

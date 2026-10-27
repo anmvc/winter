@@ -47,7 +47,7 @@ public class Reflections {
 					continue;
 				}
 
-				if (!seenSignatures.add(signature(method))) {
+				if (!Modifier.isPrivate(method.getModifiers()) && !seenSignatures.add(signature(method))) {
 					continue;
 				}
 

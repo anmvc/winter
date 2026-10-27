@@ -1,5 +1,6 @@
 package com.thewinterframework.paper.yaml;
 
+import com.google.inject.Key;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -8,6 +9,9 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FileNameImplTest {
+
+	@FileName("settings")
+	private Object qualified;
 
 	@Test
 	void theAnnotationTypeIsFileName() {
@@ -26,6 +30,19 @@ class FileNameImplTest {
 
 		assertEquals(first, second);
 		assertEquals(first.hashCode(), second.hashCode());
+	}
+
+	@Test
+	void matchesTheRuntimeAnnotationAndGuiceBindingKey() throws Exception {
+		// Comparing FileNameImpl only to itself would pass even with record-default equals/hashCode; Guice matches
+		// the binding instance against the JVM's runtime @FileName proxy on injection points.
+		final var runtime = getClass().getDeclaredField("qualified").getAnnotation(FileName.class);
+		final var generated = new FileNameImpl("settings");
+
+		assertEquals(runtime, generated);
+		assertEquals(generated, runtime);
+		assertEquals(runtime.hashCode(), generated.hashCode());
+		assertEquals(Key.get(Object.class, runtime), Key.get(Object.class, generated));
 	}
 
 	@Test

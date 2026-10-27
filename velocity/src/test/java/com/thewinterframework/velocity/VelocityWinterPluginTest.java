@@ -90,6 +90,7 @@ class VelocityWinterPluginTest {
 			loader.loadClass("example.TestPlugin").getField("failEnable").setBoolean(null, true);
 			assertThrows(IllegalStateException.class, () -> plugin.onProxyInitialize(new ProxyInitializeEvent()));
 			assertTrue(environment.listeners.isEmpty());
+			assertFalse(environment.tasks.isEmpty());
 			assertTrue(environment.tasks.stream().allMatch(t -> t.cancelled));
 			assertTrue(flag(loader, "TestService", "disabled"));
 		}
@@ -103,9 +104,14 @@ class VelocityWinterPluginTest {
 			// Velocity only fills the instance of a container once the plugin itself was created, so the plugin has to
 			// work before the proxy is able to resolve it from its own instance.
 			environment.registerPlugin("winter-test", null);
-			final var plugin = create(loader, environment);
+			final var plugin = create(loader, environment, true);
 			assertEquals("winter-test", plugin.namespace());
 			assertSame(environment.plugins.get("winter-test"), plugin.getPluginContainer());
+
+			// Even when a custom test injector omits the PluginContainer binding, @Plugin(id = ...) still resolves it.
+			final var uninjected = create(loader, environment, false);
+			assertEquals("winter-test", uninjected.namespace());
+			assertSame(environment.plugins.get("winter-test"), uninjected.getPluginContainer());
 		}
 	}
 
@@ -123,20 +129,26 @@ class VelocityWinterPluginTest {
 
 	private VelocityWinterPlugin plugin(final ClassLoader loader, final VelocityTestEnvironment environment) throws Exception {
 		environment.registerPlugin("winter-test", null);
-		final var plugin = create(loader, environment);
+		final var plugin = create(loader, environment, true);
 		environment.registerPlugin("winter-test", plugin);
 		environment.registerPlugin("dependency", null);
 		return plugin;
 	}
 
-	private VelocityWinterPlugin create(final ClassLoader loader, final VelocityTestEnvironment environment) throws Exception {
+	private VelocityWinterPlugin create(
+			final ClassLoader loader,
+			final VelocityTestEnvironment environment,
+			final boolean bindContainer
+	) throws Exception {
 		final var pluginClass = loader.loadClass("example.TestPlugin").asSubclass(VelocityWinterPlugin.class);
 		final var parent = Guice.createInjector(binder -> {
 			binder.bind(pluginClass).in(Scopes.SINGLETON);
 			binder.bind(ProxyServer.class).toInstance(environment.server);
 			binder.bind(Logger.class).toInstance(NOPLogger.NOP_LOGGER);
 			binder.bind(Path.class).annotatedWith(DataDirectory.class).toInstance(directory.resolve("data"));
-			binder.bind(PluginContainer.class).toInstance(environment.plugins.get("winter-test"));
+			if (bindContainer) {
+				binder.bind(PluginContainer.class).toInstance(environment.plugins.get("winter-test"));
+			}
 			binder.bind(UUID.class).toInstance(UUID.randomUUID());
 		});
 		return parent.getInstance(pluginClass);
@@ -153,10 +165,11 @@ class VelocityWinterPluginTest {
 		final var generated = Files.createDirectories(directory.resolve("generated"));
 		final var fixtures = Path.of(getClass().getResource("/fixtures").toURI());
 		final var diagnostics = new DiagnosticCollector<JavaFileObject>();
+		final var classPath = System.getProperty("winter.test.classpath", System.getProperty("java.class.path"));
 		try (final var manager = compiler.getStandardFileManager(diagnostics, null, null);
 			 final var files = Files.list(fixtures)) {
 			final var sources = manager.getJavaFileObjectsFromPaths(files.filter(p -> p.toString().endsWith(".java")).toList());
-			final var options = List.of("-classpath", System.getProperty("winter.test.classpath"), "-d", output.toString(),
+			final var options = List.of("-classpath", classPath, "-d", output.toString(),
 					"-s", generated.toString(), "-parameters");
 			assertTrue(compiler.getTask(null, manager, diagnostics, options, null, sources).call(), () -> diagnostics.getDiagnostics().toString());
 		}

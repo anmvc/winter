@@ -5,8 +5,6 @@ import org.junit.jupiter.api.Test;
 import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class NumberUtilsTest {
 
@@ -23,6 +21,8 @@ class NumberUtilsTest {
 		assertEquals("1.5k", NumberUtils.abbreviateNumber(1500));
 		assertEquals("1.0M", NumberUtils.abbreviateNumber(1_000_000));
 		assertEquals("1.0B", NumberUtils.abbreviateNumber(1_000_000_000));
+		assertEquals("1.0T", NumberUtils.abbreviateNumber(1_000_000_000_000L));
+		assertEquals("1.0P", NumberUtils.abbreviateNumber(1_000_000_000_000_000L));
 	}
 
 	@Test
@@ -34,14 +34,13 @@ class NumberUtilsTest {
 	@Test
 	void theSmallestLongKeepsItsSign() {
 		// Math.abs(Long.MIN_VALUE) is still negative, the abbreviation must not lose the sign because of it.
-		final var abbreviated = NumberUtils.abbreviateNumber(Long.MIN_VALUE);
-		assertTrue(abbreviated.startsWith("-"), abbreviated);
-		assertFalse(abbreviated.contains("E-"), abbreviated);
+		assertEquals("-9.2E", NumberUtils.abbreviateNumber(Long.MIN_VALUE));
 	}
 
 	@Test
-	void numbersAboveTheLastSuffixKeepAValidSuffix() {
-		assertEquals("1000.0E", NumberUtils.abbreviateNumber(1_000_000_000_000_000_000L));
+	void numbersAtTheLastSuffixKeepAValidSuffix() {
+		assertEquals("1.0E", NumberUtils.abbreviateNumber(1_000_000_000_000_000_000L));
+		assertEquals("9.2E", NumberUtils.abbreviateNumber(Long.MAX_VALUE));
 	}
 
 	@Test

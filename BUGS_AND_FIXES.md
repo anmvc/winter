@@ -258,9 +258,9 @@ generation) list what is still missing there in their respective entries.
 * **Cause:** `findMethodsWith` only inspected `clazz.getDeclaredMethods()`, so a decorated method inherited from
   a base class was invisible, and the lookup used `clazz` as the "declaring class" (which fails for inherited
   methods).
-* **Fix:** the whole class hierarchy is scanned, overrides are collapsed by name + parameter types (the most
-  derived declaration wins, annotations are not inherited) and the method handle is looked up on the declaring
-  class.
+* **Fix:** the whole class hierarchy is scanned, non-private overrides are collapsed by name + parameter types
+  (the most derived declaration wins, annotations are not inherited, while `private` superclass methods remain
+  distinct) and the method handle is looked up on the declaring class.
 
 ### 4.4 The `before`/`after` documentation said the opposite of what the code does
 * **Files:** `service/meta/lifecycle/LifeCycleMethod.java`,
@@ -315,7 +315,8 @@ generation) list what is still missing there in their respective entries.
   converter registered for `Number` did not apply to `Integer`, and no converter applied to a subclass or to an
   interface. This is why `@RepeatingTask(unit = "SECONDS")` (a `String`) failed: only the enum constants
   registered in the JEXL context could be resolved.
-* **Fix:** the exact type is tried first, then the class hierarchy, then the interfaces (transitively);
+* **Fix:** the exact type is tried first, then the class hierarchy, then the interfaces (transitively, ordering
+  sub-interfaces before their super-interfaces regardless of declaration order);
   `String → TimeUnit` and the common aliases (`MILLISECONDS`, `SECONDS`, … in any case) were added, and the
   number/string converters were completed.
 
@@ -427,7 +428,8 @@ generation) list what is still missing there in their respective entries.
   * `utils/reflect/ProcessorUtilsTest` — `plugin.type` parsing and errors.
   * `expression/converter/ConverterRegistryTest` — super type/interface converters.
   * `expression/JexlExpressionResolverTest` — resolution, time units, converters, thread safety.
-  * `service/ServiceManagerTest` — decorator discovery, handler lifecycle replay, `getOrCreateHandler`.
+  * `plugin/module/PluginModuleManagerTest` — managed module bindings, reload cycle, conditional skipping and teardown.
+  * `service/ServiceManagerTest` — decorator discovery, handler lifecycle replay, reset and `getOrCreateHandler`.
   * `paper/yaml/FileNameImplTest` — the annotation `equals`/`hashCode` contract used as a Guice key.
 
 ---
@@ -609,8 +611,9 @@ The port itself introduced the defects below, all fixed here.
   disabled, and a plugin that failed before the enable phase just resets the manager (the executor is closed either
   way). The injector guard in `shutdown()` is gone: the disable phase does not need the injector, and it is the call
   that releases the manager.
-* **Tests:** `PluginModuleManagerTest#modulesThatWereOnlyLoadedAreNotTornDown` and
-  `onlyTheModulesThatCompletedTheirEnablePhaseAreDisabled`.
+* **Tests:** `PluginModuleManagerTest#modulesThatWereOnlyLoadedAreNotTornDown`,
+  `onlyTheModulesThatCompletedTheirEnablePhaseAreDisabled` and
+  `aFailedFirstModuleIsNotDisabledWhenNothingWasEnabled`.
 
 ### 10.7 The unified component module could not run a second life cycle
 

@@ -2,8 +2,10 @@ package com.thewinterframework.expression.converter;
 
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -71,7 +73,7 @@ public class ConverterRegistry {
 		return null;
 	}
 
-	private static Set<Class<?>> allInterfaces(final Class<?> type) {
+	private static List<Class<?>> allInterfaces(final Class<?> type) {
 		final var interfaces = new LinkedHashSet<Class<?>>();
 		var current = type;
 		while (current != null && current != Object.class) {
@@ -81,7 +83,20 @@ public class ConverterRegistry {
 			current = current.getSuperclass();
 		}
 
-		return interfaces;
+		// A sub-interface must always be tried before its super-interfaces, even when the class declares the
+		// super-interface first in its `implements` clause.
+		final var ordered = new ArrayList<Class<?>>(interfaces.size());
+		for (final var candidate : interfaces) {
+			var insertAt = ordered.size();
+			for (var i = 0; i < ordered.size(); i++) {
+				if (ordered.get(i).isAssignableFrom(candidate)) {
+					insertAt = i;
+					break;
+				}
+			}
+			ordered.add(insertAt, candidate);
+		}
+		return ordered;
 	}
 
 	private static void collectInterfaces(final Class<?> iface, final Set<Class<?>> target) {

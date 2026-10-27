@@ -2,7 +2,9 @@ package com.thewinterframework.utils.graph;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -21,6 +23,8 @@ class DfsGraphTest {
 	@Test
 	void beforeIsAlwaysIteratedFirst() {
 		final var graph = new DfsGraph<String>();
+		// Registered in the opposite order so insertion order alone cannot satisfy the assertion.
+		graph.addNode("second");
 		graph.addBefore("first", "second");
 
 		assertEquals(List.of("first", "second"), graph.ordered());
@@ -51,14 +55,14 @@ class DfsGraphTest {
 	@Test
 	void aCustomComparatorDecidesBetweenIndependentNodes() {
 		final var graph = new DfsGraph<String>();
-		graph.addAfter("module", "dependency");
 		graph.addNode("z");
+		graph.addAfter("b", "m");
 		graph.addNode("a");
 
-		assertEquals(List.of("dependency", "module", "z", "a"), graph.ordered((left, right) -> {
-			final var rank = List.of("dependency", "module", "z", "a");
-			return Integer.compare(rank.indexOf(left), rank.indexOf(right));
-		}));
+		// Insertion order keeps z, m, a and appends b once m completes; natural order reorders both the initial
+		// roots (a before m before z) and the newly ready dependent (b before z).
+		assertEquals(List.of("z", "m", "a", "b"), graph.ordered());
+		assertEquals(List.of("a", "m", "b", "z"), graph.ordered(Comparator.naturalOrder()));
 	}
 
 	@Test
@@ -66,8 +70,11 @@ class DfsGraphTest {
 		final var graph = new DfsGraph<String>();
 		graph.addAfter("module", "database");
 		graph.addAfter("module", "configuration");
+		graph.addAfter("database", "driver");
 
-		assertEquals(java.util.Set.of("database", "configuration"), graph.dependenciesOf("module"));
+		final var direct = graph.dependenciesOf("module");
+		assertEquals(Set.of("database", "configuration"), direct);
+		assertThrows(UnsupportedOperationException.class, () -> direct.add("extra"));
 		assertTrue(graph.dependenciesOf("configuration").isEmpty());
 	}
 

@@ -49,7 +49,7 @@ public abstract class PaperWinterPlugin extends JavaPlugin implements WinterPlug
 			loadModules();
 		} catch (final RuntimeException | LinkageError e) {
 			getSLF4JLogger().error("Failed to load the plugin", e);
-			failFast();
+			failFast(e);
 			return;
 		}
 

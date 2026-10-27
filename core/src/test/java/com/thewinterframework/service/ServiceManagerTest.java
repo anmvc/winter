@@ -5,6 +5,7 @@ import com.thewinterframework.plugin.WinterPlugin;
 import com.thewinterframework.service.annotation.Service;
 import com.thewinterframework.service.decorator.ServiceDecorator;
 import com.thewinterframework.service.decorator.ServiceDecoratorHandler;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.lang.annotation.ElementType;
@@ -25,6 +26,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ServiceManagerTest {
 
 	static final List<String> CALLS = new ArrayList<>();
+
+	@BeforeEach
+	void clearCalls() {
+		CALLS.clear();
+	}
 
 	@Retention(RetentionPolicy.RUNTIME)
 	@Target({ElementType.METHOD, ElementType.TYPE})
@@ -51,6 +57,11 @@ class ServiceManagerTest {
 		@Override
 		public void onPluginEnable(final WinterPlugin plugin) {
 			CALLS.add("enable");
+		}
+
+		@Override
+		public void onPluginDisable(final WinterPlugin plugin) {
+			CALLS.add("disable");
 		}
 	}
 
@@ -93,7 +104,6 @@ class ServiceManagerTest {
 
 	@Test
 	void handlersAreNotifiedOfThePluginLifeCycle() throws Exception {
-		CALLS.clear();
 		final var manager = new ServiceManager();
 		manager.registerService(SampleService.class);
 
@@ -102,7 +112,7 @@ class ServiceManagerTest {
 		manager.startHandlers(plugin);
 		manager.stopHandlers(plugin);
 
-		assertEquals(List.of("discover:SampleService#start", "load", "enable"), CALLS);
+		assertEquals(List.of("discover:SampleService#start", "load", "enable", "disable"), CALLS);
 	}
 
 	@Test
@@ -119,7 +129,6 @@ class ServiceManagerTest {
 
 	@Test
 	void aHandlerCreatedAfterTheLoadCatchesUpWithTheLifeCycle() {
-		CALLS.clear();
 		final var manager = new ServiceManager();
 		final var plugin = plugin();
 
@@ -129,6 +138,16 @@ class ServiceManagerTest {
 		manager.getOrCreateHandler(RecordingHandler.class);
 
 		assertEquals(List.of("load", "enable"), CALLS);
+
+		CALLS.clear();
+		final var stoppedManager = new ServiceManager();
+		stoppedManager.loadHandlers(plugin);
+		stoppedManager.startHandlers(plugin);
+		stoppedManager.stopHandlers(plugin);
+		// After stopHandlers, enabled is cleared so a newly created handler only catches up with load.
+		stoppedManager.getOrCreateHandler(RecordingHandler.class);
+
+		assertEquals(List.of("load"), CALLS);
 	}
 
 	@Test

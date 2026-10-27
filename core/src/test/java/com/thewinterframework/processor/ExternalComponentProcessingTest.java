@@ -34,7 +34,7 @@ class ExternalComponentProcessingTest {
 				public final class SharedComponent {}
 				"""
 		);
-		assertEquals(0, compile(producerOutput, List.of(producerSource), System.getProperty("java.class.path")));
+		assertEquals(0, compile(producerOutput, List.of(producerSource), testClassPath()));
 
 		final var index = producerOutput.resolve("META-INF/winter/components.index");
 		assertTrue(Files.readString(index).contains("component:external.SharedComponent"));
@@ -54,7 +54,7 @@ class ExternalComponentProcessingTest {
 		final var originalLoader = Thread.currentThread().getContextClassLoader();
 		try (final var producerLoader = new URLClassLoader(new java.net.URL[]{producerOutput.toUri().toURL()}, originalLoader)) {
 			Thread.currentThread().setContextClassLoader(producerLoader);
-			final var classPath = System.getProperty("java.class.path")
+			final var classPath = testClassPath()
 					+ System.getProperty("path.separator")
 					+ producerOutput;
 			assertEquals(0, compile(consumerOutput, List.of(consumerSource), classPath));
@@ -85,6 +85,10 @@ class ExternalComponentProcessingTest {
 			assertTrue(moduleWire.getWiredClasses().stream()
 					.anyMatch(type -> type.getName().equals("com.thewinterframework.component.ComponentModule")));
 		}
+	}
+
+	private static String testClassPath() {
+		return System.getProperty("winter.test.classpath", System.getProperty("java.class.path"));
 	}
 
 	private Path writeSource(final String relativePath, final String source) throws Exception {
