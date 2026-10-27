@@ -1,15 +1,43 @@
-# Winter 2.1.3 — Bug hunt and fixes
+# Winter — Bug hunt and fixes
 
 This document lists every bug found while reviewing `core` and `paper`, the reason it happened and how it was
 fixed. The fixes are grouped by area; each entry names the files that were touched.
 
-Everything was reviewed against the upstream repository (`thewinterframework/winter`): the fixes below are the
-ones that were independently confirmed by later upstream commits (`421d39b` "add life cycle method to
-decorator handler graph", `933a27b` "expose annotation", `ef23de5` "force OnReloadDecorator instance creation",
-`3fe6eeb` "graph iterator now respects order", `f89e4aa` "primary handler", `8e69614` "use plugin class loader")
-or by the behaviour documented in `readme.md`. Where upstream never fixed the
-problem (several of the issues below are still present in 2.3.0) the reasoning is written down so the fix can be
-reviewed on its own merits.
+The review started from **2.1.3** and the branch has since been **merged with upstream `main` (2.3.0)**, so
+everything below is fixed on top of the current release, including the new `velocity` module and the Gradle 9.1 /
+Paper / Kyori upgrades that came with it. See [section 0](#0-merge-with-upstream-230) for how the two sets of
+changes were reconciled.
+
+Where upstream had already fixed the same problem (see the cross references below) the merge kept the version
+from this branch, which is a superset of upstream's change. Where upstream never fixed it — most of the entries,
+they are still present in 2.3.0 — the reasoning is written down so the fix can be reviewed on its own merits.
+
+---
+
+## 0. Merge with upstream 2.3.0
+
+Upstream released **2.2.0** and **2.3.0** (plus the intermediate fixes below) while this work was in progress:
+
+| Commit | Subject | Overlap with this branch |
+| --- | --- | --- |
+| `933a27b` | fix: expose annotation | same approach (`<Plugin>API` drives the generation); this branch additionally guards the generation, filters non-abstract methods and reports unusable return types |
+| `ef23de5` | force OnReloadDecorator instance creation | same `ServiceManager#getOrCreateHandler`; this branch also replays the plugin life cycle for late handlers and is synchronized |
+| `ff03ca5` | velocity platform with a child injector | new `velocity` module, merged as-is |
+| `af933be`/`cd627b7` | release 2.2.0 / 2.3.0 | Gradle 9.1 wrapper, Paper `26.2.build.134-stable`, Kyori 5.2.0, `settings`/`readme` updates, merged as-is |
+
+In 2.3.0 upstream also independently fixed, exactly as done here: `PlatformPluginManager#isPluginPresent` with
+`@RequiresPlugin` using it, the LOAD-stage condition filtering in `PluginComponentModule`, the
+`SingleScheduledAtDecoratorHandler` for a single `@ScheduledAt`, and the `RepeatingTask` default unit (`MILLIS`
+instead of the non-existent `MILLISECONDS`).
+
+The merge conflicts were therefore all "same fix, different wording" and were resolved in favour of this branch's
+version (the superset). The only real damage the automatic merge did was duplicating the `isPluginPresent`
+override in `PaperPlatform` and a `import` in `ExposeAnnotationProcessor`; both were removed, and the whole tree
+was re-validated afterwards.
+
+Every other finding below is **still present in 2.3.0**: the files involved were not touched by upstream between
+2.1.3 and 2.3.0. The two areas upstream fixed only partially (`@ModuleComponent` processing and the `@Expose`
+generation) list what is still missing there in their respective entries.
 
 ---
 
@@ -22,6 +50,7 @@ reviewed on its own merits.
   never wired and `@ModuleComponent` classes were silently ignored.
 * **Fix:** added `@AutoService` and made the `PluginModule` element lookup null-safe (`ProcessorUtils.asElement`
   returns `null` when the type is not on the classpath, which used to throw an NPE while processing).
+  *(Upstream added the same `@AutoService` in 2.3.0; the null-safe lookup is still missing there.)*
 
 ### 1.2 Custom annotation types were lost as soon as one round generated sources
 * **Files:** `processor/WinterProcessor.java`
@@ -113,6 +142,9 @@ reviewed on its own merits.
      an NPE instead of the documented `IllegalStateException`. It also did not end with a newline. The template
      now uses plain Java and throws the exceptions it documents.
 
+  *(Upstream's `933a27b` + `cd627b7` rewrite `ExposeAnnotationProcessor` the same "the interface is the source of
+  truth" way, which covers items 1, 2, 3 and 7. Items 4, 5, 6, 8 and 9 are still broken in 2.3.0.)*
+
 ---
 
 ## 2. Dependency graph
@@ -164,6 +196,7 @@ reviewed on its own merits.
   `@RequiresPlugin(...)` (a `Stage.LOAD` condition) was registered, and its dependencies were loaded, even when
   the required plugin was missing.
 * **Fix:** the classes are filtered with the same `LOAD`-stage evaluation the other modules use.
+  *(Upstream fixed this the same way in 2.3.0.)*
 
 ### 3.4 Providers were resolved from the first generic interface only
 * **Files:** `provider/ProviderModule.java`
@@ -181,7 +214,8 @@ reviewed on its own merits.
   `PluginManager#isPluginEnabled` — which is `false` for every plugin at that point. The annotation therefore
   disabled the component even when the plugin was present.
 * **Fix:** a new `isPluginPresent` (default: `isPluginEnabled`) is implemented by `PaperPlatform` with
-  `getPlugin(name) != null`, and the condition uses it.
+  `getPlugin(name) != null`, and the condition uses it. *(Upstream fixed this the same way in 2.3.0, including the
+  default method and the Velocity plugin ID variant.)*
 
 ### 3.6 `@RequiresExpr` crashed on unexpected input
 * **Files:** `wire/condition/common/expression/RequiresExpressionCondition.java`
@@ -203,6 +237,7 @@ reviewed on its own merits.
   overrides `onConfigure` and is requested after the injection is configured now fails with an explicit message
   instead of silently dropping its bindings. `ReloadServiceManager` uses the new `getOrCreateHandler`, so
   `addOnReload(...)` no longer silently does nothing when no component is annotated with `@OnReload`.
+  *(Upstream added `getOrCreateHandler` in 2.3.0 as well, without the life cycle replay.)*
 * `handlers`/`registeredServices` are insertion ordered, the public API is synchronized (reloads come from other
   threads) and `services()` returns a copy instead of the internal mutable set.
 
@@ -250,14 +285,14 @@ reviewed on its own merits.
   is repeated, so a method with exactly one `@ScheduledAt` was never seen by the container handler — and the
   annotation itself had no `@ServiceDecorator`, so nothing happened at all.
 * **Fix:** `@ScheduledAt` is now a decorator for its own single-annotation handler, which builds the same
-  `ScheduledAtMethod` with a one-element schedule list.
+  `ScheduledAtMethod` with a one-element schedule list. *(Upstream fixed this the same way in 2.3.0.)*
 
 ### 5.3 Time driven tasks used the wrong unit and could double fire
 * **Files:** `service/annotation/scheduler/RepeatingTask.java`,
   `service/meta/scheduler/RepeatingTaskMethod.java`, `service/meta/scheduler/ScheduledAtMethod.java`
 * **Causes and fixes:**
   * `RepeatingTask#unit` defaulted to `"MILLISECONDS"`, which is not a `TimeUnit` constant (the enum has
-    `MILLIS`), so a task using the default unit failed to resolve.
+    `MILLIS`), so a task using the default unit failed to resolve. *(Also fixed upstream in 2.3.0.)*
   * `ScheduledAtMethod` polls at a fixed rate of one second and compared the *current* second. Because the poll
     period and the wall clock are not synchronised, two consecutive polls can land in the same second (the task
     runs twice) while another second is skipped entirely; after a lag spike the missed executions are lost. The
@@ -377,8 +412,9 @@ reviewed on its own merits.
   a test classpath at all (the modules had no tests), `junit-platform-launcher` was missing (required by Gradle
   for JUnit 5) and the compile-only dependencies used by the tests (adventure, MiniMessage, Guava) were not on
   the test runtime classpath.
-* **Fix:** the test dependencies and `useJUnitPlatform()` moved into `subprojects`, the launcher was added to the
-  catalog and `core` declares the compile-only libraries it needs at test runtime.
+* **Fix:** the test dependencies and `useJUnitPlatform()` moved into `subprojects` (so `velocity`, which joined in
+  2.3.0, gets them too), the launcher was added to the catalog and `core` declares the compile-only libraries it
+  needs at test runtime. Upstream's `winter.test.classpath` system property (used by the Velocity tests) is kept.
 * **Tests added** (they document the behaviour that was fixed):
   * `utils/graph/DfsGraphTest` — dependency ordering, insertion order, cycles.
   * `utils/TimeUnitTest` — tick rounding, sub-tick units, overflow clamping.
@@ -394,9 +430,11 @@ reviewed on its own merits.
 
 ## Verification notes
 
-The sandbox used for this review has no JDK compiler and no network access to Maven Central, so the project
-could not be compiled here. Every modified file was parsed with a Java grammar (tree-sitter) to catch syntax
-errors, the whole diff was reviewed by hand for API/typing mistakes, and the ordering logic of `DfsGraph` was
-validated with an executable model of the algorithm. The two remaining parser complaints are a known
-tree-sitter false positive on pattern-matching `switch` labels (also reported for the unmodified upstream file)
-and the generated-source template, which is not a compilable Java file by design.
+The sandbox used for this review has no JDK compiler and no network access to Maven Central, so the project could
+not be compiled here. Every modified file was parsed with a Java grammar (tree-sitter) — the merged tree is
+124 Java files, and the single remaining complaint is a known tree-sitter false positive on pattern-matching
+`switch` labels, reported for the unmodified upstream file as well — the whole diff was reviewed by hand for
+API/typing mistakes, and the ordering logic of `DfsGraph` was validated with an executable model of the algorithm.
+The merge with 2.3.0 was additionally checked for the classic silent-merge failure modes (duplicated overrides,
+duplicated annotations and imports, and duplicated dependency declarations), which found and removed the two
+artifacts mentioned in section 0.
