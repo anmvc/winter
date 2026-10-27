@@ -96,6 +96,20 @@ class VelocityWinterPluginTest {
 	}
 
 	@Test
+	void resolvesThePluginIdentityWithoutARegisteredInstance() throws Exception {
+		final var output = compilePlugin();
+		try (final var loader = new URLClassLoader(new URL[]{output.toUri().toURL()}, getClass().getClassLoader())) {
+			final var environment = new VelocityTestEnvironment();
+			// Velocity only fills the instance of a container once the plugin itself was created, so the plugin has to
+			// work before the proxy is able to resolve it from its own instance.
+			environment.registerPlugin("winter-test", null);
+			final var plugin = create(loader, environment);
+			assertEquals("winter-test", plugin.namespace());
+			assertSame(environment.plugins.get("winter-test"), plugin.getPluginContainer());
+		}
+	}
+
+	@Test
 	void distinguishesInstalledPluginsFromConstructedInstances() {
 		final var environment = new VelocityTestEnvironment();
 		environment.registerPlugin("installed", null);
@@ -109,6 +123,13 @@ class VelocityWinterPluginTest {
 
 	private VelocityWinterPlugin plugin(final ClassLoader loader, final VelocityTestEnvironment environment) throws Exception {
 		environment.registerPlugin("winter-test", null);
+		final var plugin = create(loader, environment);
+		environment.registerPlugin("winter-test", plugin);
+		environment.registerPlugin("dependency", null);
+		return plugin;
+	}
+
+	private VelocityWinterPlugin create(final ClassLoader loader, final VelocityTestEnvironment environment) throws Exception {
 		final var pluginClass = loader.loadClass("example.TestPlugin").asSubclass(VelocityWinterPlugin.class);
 		final var parent = Guice.createInjector(binder -> {
 			binder.bind(pluginClass).in(Scopes.SINGLETON);
@@ -118,10 +139,7 @@ class VelocityWinterPluginTest {
 			binder.bind(PluginContainer.class).toInstance(environment.plugins.get("winter-test"));
 			binder.bind(UUID.class).toInstance(UUID.randomUUID());
 		});
-		final var plugin = parent.getInstance(pluginClass);
-		environment.registerPlugin("winter-test", plugin);
-		environment.registerPlugin("dependency", null);
-		return plugin;
+		return parent.getInstance(pluginClass);
 	}
 
 	private boolean flag(final ClassLoader loader, final String type, final String field) throws Exception {

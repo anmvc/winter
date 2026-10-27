@@ -37,8 +37,14 @@ public class VelocityPluginScheduler implements PluginScheduler {
 
 	@Override
 	public void cancelAllTasks() {
-		scheduler.tasksByPlugin(plugin).forEach(ScheduledTask::cancel);
-		tasks.clear();
+		try {
+			scheduler.tasksByPlugin(plugin).forEach(ScheduledTask::cancel);
+		} catch (final IllegalArgumentException e) {
+			// Velocity rejects plugins it no longer knows about; their tasks were dropped with the registration.
+			// Cancelation must never fail, it also runs from the shutdown path where it would mask the real cause.
+		} finally {
+			tasks.clear();
+		}
 	}
 
 	@Override
@@ -96,19 +102,23 @@ public class VelocityPluginScheduler implements PluginScheduler {
 		if (delay < 0) {
 			throw new IllegalArgumentException("The delay cannot be negative");
 		}
+		if (interval < 0) {
+			throw new IllegalArgumentException("The repeat interval cannot be negative");
+		}
+		final var repeating = interval > 0;
 		final var id = nextId.incrementAndGet();
 		final var completed = new AtomicBoolean();
 		final var builder = scheduler.buildTask(plugin, () -> {
 			try {
 				runnable.run();
 			} finally {
-				if (interval == 0) {
+				if (!repeating) {
 					completed.set(true);
 					tasks.remove(id);
 				}
 			}
 		}).delay(unit.getDuration().multipliedBy(delay));
-		if (interval > 0) {
+		if (repeating) {
 			builder.repeat(unit.getDuration().multipliedBy(interval));
 		}
 		tasks.put(id, builder.schedule());

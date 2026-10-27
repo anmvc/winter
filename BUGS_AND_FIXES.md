@@ -1,7 +1,7 @@
 # Winter — Bug hunt and fixes
 
-This document lists every bug found while reviewing `core` and `paper`, the reason it happened and how it was
-fixed. The fixes are grouped by area; each entry names the files that were touched.
+This document lists every bug found while reviewing `core`, `paper` and `velocity`, the reason it happened and how
+it was fixed. The fixes are grouped by area; each entry names the files that were touched.
 
 The review started from **2.1.3** and the branch has since been **merged with upstream `main` (2.3.0)**, so
 everything below is fixed on top of the current release, including the new `velocity` module and the Gradle 9.1 /
@@ -11,6 +11,10 @@ changes were reconciled.
 Where upstream had already fixed the same problem (see the cross references below) the merge kept the version
 from this branch, which is a superset of upstream's change. Where upstream never fixed it — most of the entries,
 they are still present in 2.3.0 — the reasoning is written down so the fix can be reviewed on its own merits.
+
+Sections 1 to 8 are pre-existing defects (2.1.3 and older). Section 9 lists the defects **introduced by 2.2.0 /
+2.3.0 themselves**, found while auditing the new `velocity` module, its Gradle setup and the concurrent fixes
+upstream shipped in `core`.
 
 ---
 
@@ -428,13 +432,105 @@ generation) list what is still missing there in their respective entries.
 
 ---
 
+## 9. Defects introduced by upstream 2.2.0 / 2.3.0
+
+The following bugs only exist in the code upstream added between 2.1.3 and 2.3.0 (the `velocity` module and the
+build files it brought along). They are fixed on top of the merge, so this branch is not only "2.1.3 fixes applied
+to 2.3.0" — the new code was audited too, against the Velocity API sources and the upstream `readme.md`.
+
+### 9.1 `VelocityWinterPlugin#getPluginContainer` broke whenever the proxy had not registered the instance
+
+* **Files:** `velocity/src/main/java/com/thewinterframework/velocity/VelocityWinterPlugin.java`
+* **Cause:** the container was resolved exclusively through
+  `ProxyServer#getPluginManager().fromInstance(this)`, an **identity** lookup that only answers for an object the
+  proxy itself put in its `IdentityHashMap` (Velocity fills it from `PluginContainer#getInstance()`, i.e. after the
+  main class was constructed). `namespace()` — which Winter uses for `@RequiresPlugin`, expressions and logging —
+  went through the same path, so the very first call made before the instance is registered threw
+  `IllegalStateException("The plugin has not been registered with Velocity")`: unit tests, embedding Winter in a
+  launcher, reload tooling and any code that runs while the plugin is still being constructed.
+* **Fix:** the container is taken from the injector Velocity hands to the plugin, where it is always bound
+  (`VelocityPluginModule` binds `PluginContainer`), then `fromInstance`, then the plugin ID read from the `@Plugin`
+  annotation → `PluginManager#getPlugin`. `namespace()` prefers the `@Plugin` ID, which needs no proxy state at all,
+  and the resolved container/namespace are cached, so the extra lookups happen at most once.
+* **Tests added:** `VelocityWinterPluginTest#resolvesThePluginIdentityWithoutARegisteredInstance` — a plugin whose
+  container has no instance resolves `namespace()`; before the fix this threw.
+
+### 9.2 `YamlConfig` refused to load any YAML file with a non-string key
+
+* **Files:** `velocity/src/main/java/com/thewinterframework/velocity/yaml/YamlConfig.java`
+* **Cause:** `stringMap` threw `IllegalStateException("YAML configuration keys must be strings")` for every key that
+  was not a `String`. YAML allows any scalar as a key, and players write such files all the time
+  (`1: lobby`, `true: yes`), so the plugin died during `onPluginLoad` with an exception that named no file. The
+  Bukkit-based `paper` configuration this replaces coerces keys with `toString()`, so this was also a behaviour
+  regression for anyone porting a config.
+* **Fix:** keys are coerced with `String.valueOf` (nested sections included); the file loads and the values stay
+  addressable through the dotted paths, e.g. `getString("section.3")`.
+* **Tests added:** `YamlConfigTest#loadsScalarKeysAsStrings` (load, dotted access and round-trip through `save()`).
+
+### 9.3 `YamlConfig#getList` returned an immutable list for missing keys
+
+* **Files:** `velocity/src/main/java/com/thewinterframework/velocity/yaml/YamlConfig.java`
+* **Cause:** the missing-key branch returned `List.of()` while the present-key branch returned `new ArrayList<>(…)`,
+  so `config.getList("servers").add(…)` worked or threw `UnsupportedOperationException` depending on the content of
+  the file. `getStringList` used `Stream#toList`, which is immutable as well.
+* **Fix:** every list accessor returns a fresh mutable `ArrayList` that is a copy of the configuration content, so
+  callers can build on it without changing the configuration by accident.
+* **Tests added:** `YamlConfigTest#returnsMutableListsThatDoNotChangeTheConfiguration`.
+
+### 9.4 `VelocityPluginScheduler#cancelAllTasks` could throw during shutdown
+
+* **Files:** `velocity/src/main/java/com/thewinterframework/velocity/scheduler/VelocityPluginScheduler.java`
+* **Cause:** `Scheduler#tasksByPlugin` throws `IllegalArgumentException("plugin is not registered")` for a plugin the
+  proxy no longer knows about. `cancelAllTasks()` runs from the `finally` block of
+  `VelocityWinterPlugin#shutdown`, which is also the cleanup path of a failed enable — a throw there replaces the
+  original failure with an unrelated one and skips clearing Winter's own task ids.
+* **Fix:** the proxy lookup is guarded (the tasks are gone together with the registration) and the local id map is
+  cleared in a `finally`. The `interval == 0` sentinel that decided between a one-shot and a repeating task was also
+  replaced by an explicit `repeating` flag, and a negative interval is rejected instead of silently producing a
+  one-shot task.
+* **Tests added:** `VelocityPluginSchedulerTest#cancelAllTasksSurvivesATaskLookupTheProxyRejects`.
+
+### 9.5 The `velocity` module duplicated the test configuration of the root build script
+
+* **Files:** `velocity/build.gradle.kts`, `core/build.gradle.kts`
+* **Cause:** 2.3.0 added `velocity` with its own `junit-jupiter-api`/`engine`/`useJUnitPlatform()` block, on top of
+  the `subprojects` block added here, and pinned the launcher with a literal coordinate
+  (`"org.junit.platform:junit-platform-launcher"`) instead of the version catalog entry — three declarations of the
+  same module and one of them unversioned. `core` had the same duplication from the merge.
+* **Fix:** the JUnit wiring lives in `subprojects` only, the launcher uses `libs.junit.platform.launcher`, and both
+  modules keep just what is specific to them (`libs.velocity`, `libs.adventure`, and the `winter.test.classpath`
+  system property the Velocity tests need to compile their fixtures).
+
+### Deliberately unchanged
+
+* `VelocityPlatform#isPluginEnabled` reports "the container has an instance", because Velocity has no
+  enable/disable state (`PluginManager#getPlugin` is already "loaded"). Upstream asserts exactly that behaviour in
+  `distinguishesInstalledPluginsFromConstructedInstances`, and `@RequiresPlugin` uses `isPluginPresent`, so the
+  semantics are documented in the class instead of being changed.
+* `YamlConfig`/`set`/`get` split paths on `.`, like every Bukkit configuration, so a literal key containing a dot
+  cannot be addressed. That is a documented API decision, not a defect.
+* `runSync`/`ensureSync`/`getMainThreadExecutor` execute on Velocity's pool: there is no main thread, as stated in
+  the upstream `readme.md`.
+
+---
+
 ## Verification notes
 
 The sandbox used for this review has no JDK compiler and no network access to Maven Central, so the project could
 not be compiled here. Every modified file was parsed with a Java grammar (tree-sitter) — the merged tree is
-124 Java files, and the single remaining complaint is a known tree-sitter false positive on pattern-matching
-`switch` labels, reported for the unmodified upstream file as well — the whole diff was reviewed by hand for
-API/typing mistakes, and the ordering logic of `DfsGraph` was validated with an executable model of the algorithm.
+130 Java files, and the only complaints are a known false positive on the pattern-matching `switch` labels of
+`ComponentUtils` (reported for the unmodified upstream file as well) and the six `*.java` files under
+`src/main/resources/generated`, which are templates full of `<PLACEHOLDER>` tokens and not compilable Java to
+begin with. The whole diff was reviewed by hand for API/typing mistakes, and the ordering logic of `DfsGraph` was
+validated with an executable model of the algorithm.
 The merge with 2.3.0 was additionally checked for the classic silent-merge failure modes (duplicated overrides,
 duplicated annotations and imports, and duplicated dependency declarations), which found and removed the two
 artifacts mentioned in section 0.
+
+The Velocity code was checked against Velocity's own API and proxy sources rather than from memory: `@Plugin` is
+`RetentionPolicy.RUNTIME` (so the annotation lookup used by 9.1 is valid), `VelocityPluginModule` binds
+`PluginContainer` in the plugin injector (the lookup added by 9.1 is always available), `Scheduler#buildTask`
+requires a registered plugin and `Scheduler#tasksByPlugin` rejects one that is not (9.4), the `EventManager`
+overloads Winter calls are not deprecated, and `Scheduler.TaskBuilder` accepts a zero delay together with a repeat
+period (so `runAtFixedRate*` with no initial delay is correct as written). Every new test was written against the
+existing stub environment in `VelocityTestEnvironment`; none of them needs an API the stubs do not implement.

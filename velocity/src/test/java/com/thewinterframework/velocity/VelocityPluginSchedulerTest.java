@@ -2,6 +2,8 @@ package com.thewinterframework.velocity;
 
 import com.thewinterframework.utils.TimeUnit;
 import com.thewinterframework.velocity.scheduler.VelocityPluginScheduler;
+import com.velocitypowered.api.proxy.ProxyServer;
+import com.velocitypowered.api.scheduler.Scheduler;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -59,6 +61,21 @@ class VelocityPluginSchedulerTest {
 		environment.tasks.forEach(VelocityTestEnvironment.Task::execute);
 		assertEquals("result", success.join());
 		assertInstanceOf(IllegalStateException.class, assertThrows(CompletionException.class, failure::join).getCause());
+	}
+
+	@Test
+	void cancelAllTasksSurvivesATaskLookupTheProxyRejects() {
+		// Velocity throws for plugins it no longer knows about; cancelation runs from the shutdown path and must not
+		// replace the failure that triggered it.
+		final var rejectingScheduler = VelocityTestEnvironment.stub(Scheduler.class, (proxy, method, args) -> {
+			throw new IllegalArgumentException("plugin is not registered");
+		});
+		final var server = VelocityTestEnvironment.stub(ProxyServer.class, (proxy, method, args) -> switch (method.getName()) {
+			case "getScheduler" -> rejectingScheduler;
+			default -> throw new UnsupportedOperationException(method.toString());
+		});
+		final var scheduler = new VelocityPluginScheduler(new Object(), server);
+		assertDoesNotThrow(scheduler::cancelAllTasks);
 	}
 
 	@Test

@@ -33,7 +33,6 @@ dependencies {
 
     // Tests: the dependencies above are compile-only, so they must be on the test runtime classpath as well
     // to be able to exercise the classes using them.
-    testImplementation(libs.junit.api)
     testImplementation(libs.adventure)
     testImplementation(libs.minimessage)
     testImplementation(libs.kyori.text)
@@ -41,8 +40,6 @@ dependencies {
     testImplementation(libs.guava)
     testImplementation(libs.commons.jexl3)
     testImplementation("org.slf4j:slf4j-api:1.7.29")
-    testRuntimeOnly(libs.junit.engine)
-    testRuntimeOnly(libs.junit.platform.launcher)
 }
 
 java {
@@ -57,6 +54,5 @@ tasks.withType<JavaCompile> {
 }
 
 tasks.test {
-    useJUnitPlatform()
     systemProperty("winter.test.classpath", sourceSets.test.get().runtimeClasspath.asPath)
 }

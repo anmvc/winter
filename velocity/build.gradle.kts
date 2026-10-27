@@ -17,11 +17,9 @@ dependencies {
     annotationProcessor(libs.auto.service)
     implementation(libs.snakeyaml)
 
+    // The JUnit dependencies come from the root build script, only the platform API is velocity specific.
     testImplementation(libs.velocity)
-    testImplementation(libs.junit.api)
     testImplementation(libs.adventure)
-    testRuntimeOnly(libs.junit.engine)
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 java {
@@ -36,6 +34,6 @@ tasks.withType<JavaCompile> {
 }
 
 tasks.test {
-    useJUnitPlatform()
+    // The platform dependencies are compile-only, so the compiled fixtures need the test runtime classpath.
     systemProperty("winter.test.classpath", sourceSets.test.get().runtimeClasspath.asPath)
 }

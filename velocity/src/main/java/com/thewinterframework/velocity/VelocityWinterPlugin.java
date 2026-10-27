@@ -15,6 +15,7 @@ import com.thewinterframework.velocity.scheduler.VelocityPluginScheduler;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
+import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.PluginContainer;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.ProxyServer;
@@ -23,6 +24,7 @@ import org.slf4j.Logger;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
 
@@ -43,6 +45,8 @@ public abstract class VelocityWinterPlugin implements WinterPlugin {
 	protected final PlatformPluginManager platformPluginManager;
 	protected ExpressionResolver expressionResolver = new JexlExpressionResolver();
 	protected Injector injector;
+	private PluginContainer pluginContainer;
+	private String resolvedNamespace;
 	private boolean started;
 	private boolean modulesLoaded;
 	private boolean enabled;
@@ -149,9 +153,60 @@ public abstract class VelocityWinterPlugin implements WinterPlugin {
 		return dataDirectory;
 	}
 
+	/**
+	 * Returns the Velocity container of this plugin.
+	 * <p>
+	 * The container is read from the injector Velocity created for the plugin, where it is always bound, instead of
+	 * relying only on {@link com.velocitypowered.api.plugin.PluginManager#fromInstance(Object)}. The identity lookup
+	 * misses every instance the proxy did not create itself, which is common while testing or embedding Winter, and it
+	 * throws as soon as the proxy has not registered the instance yet.
+	 *
+	 * @return the plugin container
+	 * @throws IllegalStateException if the plugin is not known to Velocity at all
+	 */
 	public final PluginContainer getPluginContainer() {
-		return server.getPluginManager().fromInstance(this)
+		final var cached = pluginContainer;
+		if (cached != null) {
+			return cached;
+		}
+
+		final var container = injectedPluginContainer()
+				.or(() -> server.getPluginManager().fromInstance(this))
+				.or(() -> annotatedPluginId().flatMap(server.getPluginManager()::getPlugin))
 				.orElseThrow(() -> new IllegalStateException("The plugin has not been registered with Velocity"));
+
+		pluginContainer = container;
+		return container;
+	}
+
+	/**
+	 * Reads the {@link PluginContainer} bound by Velocity in the plugin injector.
+	 *
+	 * @return the bound container, if Velocity provided one
+	 */
+	private Optional<PluginContainer> injectedPluginContainer() {
+		if (velocityInjector.getExistingBinding(Key.get(PluginContainer.class)) == null) {
+			return Optional.empty();
+		}
+
+		return Optional.ofNullable(velocityInjector.getInstance(PluginContainer.class));
+	}
+
+	/**
+	 * Reads the plugin ID from the {@link Plugin} annotation of the plugin class.
+	 *
+	 * @return the annotated plugin ID, if the class declares one
+	 */
+	private Optional<String> annotatedPluginId() {
+		for (var type = getClass(); type != null && type != Object.class; type = type.getSuperclass()) {
+			final var annotation = type.getAnnotation(Plugin.class);
+
+			if (annotation != null && !annotation.id().isBlank()) {
+				return Optional.of(annotation.id());
+			}
+		}
+
+		return Optional.empty();
 	}
 
 	@Override
@@ -190,8 +245,21 @@ public abstract class VelocityWinterPlugin implements WinterPlugin {
 		this.expressionResolver = requireNonNull(resolver, "resolver");
 	}
 
+	/**
+	 * Returns the plugin ID, which Winter uses as the plugin namespace.
+	 * <p>
+	 * The {@link Plugin} annotation is authoritative and is read without querying the proxy, therefore the namespace is
+	 * available before the plugin is registered, during {@code onPluginLoad()} and inside unit tests.
+	 */
 	@Override
 	public String namespace() {
-		return getPluginContainer().getDescription().getId();
+		final var cached = resolvedNamespace;
+		if (cached != null) {
+			return cached;
+		}
+
+		final var namespace = annotatedPluginId().orElseGet(() -> getPluginContainer().getDescription().getId());
+		resolvedNamespace = namespace;
+		return namespace;
 	}
 }

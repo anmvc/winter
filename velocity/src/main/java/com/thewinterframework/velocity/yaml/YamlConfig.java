@@ -135,12 +135,19 @@ public final class YamlConfig {
 	}
 
 	public List<?> getList(final String key) {
-		return get(key) instanceof List<?> list ? new ArrayList<>(list) : List.of();
+		return get(key) instanceof List<?> list ? new ArrayList<>(list) : new ArrayList<>();
 	}
 
 	public List<String> getStringList(final String key) {
-		return getList(key).stream().filter(value -> value instanceof String || value instanceof Number || value instanceof Boolean)
-				.map(Object::toString).toList();
+		final var values = new ArrayList<String>();
+
+		for (final var value : getList(key)) {
+			if (value instanceof String || value instanceof Number || value instanceof Boolean) {
+				values.add(value.toString());
+			}
+		}
+
+		return values;
 	}
 
 	public Set<String> getKeys() {
@@ -177,13 +184,16 @@ public final class YamlConfig {
 
 	private static Map<String, Object> stringMap(final Map<?, ?> source) {
 		final var result = new LinkedHashMap<String, Object>();
+
 		for (final var entry : source.entrySet()) {
-			if (!(entry.getKey() instanceof String key)) {
-				throw new IllegalStateException("YAML configuration keys must be strings");
-			}
+			// YAML accepts any scalar as a mapping key, so a configuration may legitimately contain entries such as
+			// "1: first" or "true: yes". Coercing the key mirrors the Bukkit-based configuration and keeps the file
+			// loadable instead of aborting the whole plugin startup.
+			final var key = String.valueOf(entry.getKey());
 			final var value = entry.getValue();
 			result.put(key, value instanceof Map<?, ?> map ? stringMap(map) : value);
 		}
+
 		return result;
 	}
 

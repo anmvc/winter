@@ -60,6 +60,41 @@ class YamlConfigTest {
 	}
 
 	@Test
+	void loadsScalarKeysAsStrings() throws Exception {
+		final var path = directory.resolve("keys.yml");
+		final var config = YamlConfig.create(path);
+		Files.writeString(path, "1: first\n2: second\nsection:\n  3: third\n");
+		config.load();
+		assertEquals("first", config.getString("1"));
+		assertEquals("second", config.getString("2"));
+		assertEquals("third", config.getString("section.3"));
+		assertTrue(config.getKeys().containsAll(List.of("1", "2", "section")));
+		config.save();
+		final var reloaded = YamlConfig.create(path);
+		reloaded.load();
+		assertEquals("first", reloaded.getString("1"));
+		assertEquals("third", reloaded.getString("section.3"));
+	}
+
+	@Test
+	@SuppressWarnings("unchecked")
+	void returnsMutableListsThatDoNotChangeTheConfiguration() throws Exception {
+		final var path = directory.resolve("lists.yml");
+		final var config = YamlConfig.create(path);
+		Files.writeString(path, "servers:\n  - lobby\n");
+		config.load();
+		final var missing = (List<Object>) config.getList("missing");
+		final var servers = (List<Object>) config.getList("servers");
+		assertDoesNotThrow(() -> {
+			missing.add("lobby");
+			servers.add("survival");
+			config.getStringList("missing").add("lobby");
+		});
+		assertTrue(missing.contains("lobby"));
+		assertEquals(List.of("lobby"), config.getStringList("servers"), "the configuration must not expose its own list");
+	}
+
+	@Test
 	void generatedQualifierMatchesTheRuntimeAnnotation() throws Exception {
 		final var annotation = getClass().getDeclaredField("qualified").getAnnotation(FileName.class);
 		final var generated = new FileNameImpl("config");
