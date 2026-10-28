@@ -14,10 +14,24 @@ public class RequiresExpressionCondition implements ComponentCondition {
 
 	@Override
 	public boolean matches(final ConditionContext context, final Annotation rawAnnotation) {
-		final var annotation = (RequiresExpr) rawAnnotation;
-		final var resolver = context.getPlugin().getExpressionResolver();
-		final var expression = annotation.value();
+		if (!(rawAnnotation instanceof final RequiresExpr annotation)) {
+			return false;
+		}
 
+		final var resolver = context.getPlugin().getExpressionResolver();
+		if (resolver == null) {
+			return false;
+		}
+
+		final var expression = annotation.value();
+		if (expression == null || expression.isBlank()) {
+			// A blank expression carries no requirement at all, treating it as a failure would silently disable
+			// a component that only forgot to fill the expression in.
+			return true;
+		}
+
+		// The resolver returns {@code null} when the expression cannot be evaluated, so anything that is not
+		// explicitly {@code true} is treated as a failed condition.
 		return Boolean.TRUE.equals(resolver.resolve(expression, Boolean.class));
 	}
 }

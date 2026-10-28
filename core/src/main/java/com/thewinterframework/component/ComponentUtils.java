@@ -7,8 +7,12 @@ import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.function.UnaryOperator;
 
 /**
@@ -40,17 +44,19 @@ public final class ComponentUtils {
 	/**
 	 * The global tag resolvers, which are used when parsing MiniMessage components.
 	 */
-	private final static Collection<TagResolver> GLOBAL_TAG_RESOLVERS = new ArrayList<>();
+	private final static Collection<TagResolver> GLOBAL_TAG_RESOLVERS = new CopyOnWriteArrayList<>();
 
 	/**
 	 * The component resolvers, which are used to resolve objects into components.
 	 */
-	private final static Map<Class<?>, ComponentResolver<?>> COMPONENT_RESOLVERS = new HashMap<>();
+	private final static Map<Class<?>, ComponentResolver<?>> COMPONENT_RESOLVERS = new ConcurrentHashMap<>();
 
 	/**
 	 * The component modifiers, which are used to modify components after they are resolved.
 	 */
-	private final static Collection<UnaryOperator<Component>> COMPONENT_MODIFIERS = new HashSet<>();
+	// Insertion ordered (modifiers are applied in the order they were registered) and safe to iterate from any
+	// thread, components are parsed from asynchronous tasks too.
+	private final static Collection<UnaryOperator<Component>> COMPONENT_MODIFIERS = new CopyOnWriteArraySet<>();
 
 	private ComponentUtils() {
 	}
@@ -332,7 +338,12 @@ public final class ComponentUtils {
 	 * @return The resolved component.
 	 */
 	@SuppressWarnings("unchecked")
-	public static @NotNull Component resolve(final @NotNull Object object) {
+	public static @NotNull Component resolve(final @Nullable Object object) {
+		if (object == null) {
+			// A missing value (for example an unknown placeholder) must not break the whole message.
+			return Component.empty();
+		}
+
 		switch (object) {
 			case final Component component -> {
 				return component;

@@ -5,10 +5,15 @@ import com.thewinterframework.utils.TimeUnit;
 import com.thewinterframework.utils.reflect.AnnotatedMethodHandle;
 
 import java.time.Instant;
+import java.time.ZonedDateTime;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static java.util.Objects.requireNonNull;
 
+/**
+ * Schedules a method to be executed at a fixed time of the day.
+ */
 public record ScheduledAtMethod(
 		Class<?> service,
 		AnnotatedMethodHandle<?> method,
@@ -46,7 +51,10 @@ public record ScheduledAtMethod(
 
 		final var parsedSchedules = schedules.stream()
 				.map(schedule -> {
-					final var hourParsed = requireNonNull(expressionResolver.resolve(schedule.hour, Integer.class));
+					final var hourParsed = requireNonNull(
+							expressionResolver.resolve(schedule.hour, Integer.class),
+							"Could not resolve the hour of a @ScheduledAt annotation"
+					);
 					final var minuteParsed = expressionResolver.resolve(schedule.minute, Integer.class);
 					final var secondParsed = expressionResolver.resolve(schedule.second, Integer.class);
 
@@ -58,24 +66,34 @@ public record ScheduledAtMethod(
 				})
 				.toList();
 
+		// The scheduler only offers fixed rate tasks, so the current time is polled once per second. Every second
+		// between two polls is inspected, otherwise a delayed poll (server lag) could silently skip a schedule.
+		final var lastPolledSecond = new AtomicLong(Long.MIN_VALUE);
 		final Runnable task = () -> {
 			final var pluginTimeZone = plugin.getZoneId();
-			final var now = Instant.now().atZone(pluginTimeZone);
-			final var isScheduledTime = parsedSchedules.stream()
-					.anyMatch(time ->
-							time.hour() == now.getHour() &&
-									time.minute() == now.getMinute() &&
-									time.second() == now.getSecond()
-					);
+			final var now = ZonedDateTime.now(pluginTimeZone);
+			final var currentSecond = now.toEpochSecond();
+			final var previousSecond = lastPolledSecond.getAndSet(currentSecond);
+			final var firstSecond = previousSecond == Long.MIN_VALUE ? currentSecond : previousSecond + 1;
 
-			if (!isScheduledTime) {
-				return;
-			}
+			for (var second = firstSecond; second <= currentSecond; second++) {
+				final var time = Instant.ofEpochSecond(second).atZone(pluginTimeZone);
+				final var isScheduledTime = parsedSchedules.stream()
+						.anyMatch(schedule ->
+								schedule.hour() == time.getHour() &&
+										schedule.minute() == time.getMinute() &&
+										schedule.second() == time.getSecond()
+						);
 
-			try {
-				method.invoke(service, plugin.getInjector());
-			} catch (final Throwable e) {
-				plugin.getSLF4JLogger().error("Error while executing repeating task", e);
+				if (!isScheduledTime) {
+					continue;
+				}
+
+				try {
+					method.invoke(service, plugin.getInjector());
+				} catch (final Throwable e) {
+					plugin.getSLF4JLogger().error("Error while executing scheduled task", e);
+				}
 			}
 		};
 

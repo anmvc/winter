@@ -6,19 +6,22 @@ import com.thewinterframework.plugin.module.Stage;
 import com.thewinterframework.processor.clazz.ClassWireProcessor;
 import com.thewinterframework.processor.module.ProcessorModule;
 import com.thewinterframework.processor.wire.ClassListWire;
-import com.thewinterframework.wire.condition.annotation.Requires;
+import com.thewinterframework.wire.condition.Conditions;
 import com.thewinterframework.wire.condition.context.ConditionContext;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.AnnotatedElement;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Set;
 
 import static java.lang.Class.forName;
 
 public abstract class AbstractProcessorModule implements ProcessorModule {
 
-	protected final Set<Class<?>> activeComponents = new HashSet<>();
+	/** Components whose load phase completed, in scan order. */
+	protected final Set<Class<?>> activeComponents = new LinkedHashSet<>();
+	/** Components whose enable phase completed, in enable order. */
+	protected final Set<Class<?>> enabledComponents = new LinkedHashSet<>();
 	protected final Class<? extends Annotation> moduleAnnotation;
 	protected ClassListWire wire;
 
@@ -36,22 +39,7 @@ public abstract class AbstractProcessorModule implements ProcessorModule {
 	}
 
 	protected boolean evaluateConditions(final AnnotatedElement componentClass, final Stage targetStage, final ConditionContext context, final Injector injector) throws Exception {
-		for (final var annotation : componentClass.getAnnotations()) {
-			final var conditional = annotation.annotationType().getAnnotation(Requires.class);
-			if (conditional != null) {
-				final var componentClazz = conditional.value();
-				final var conditionEvaluator = targetStage == Stage.LOAD ?
-						componentClazz.getDeclaredConstructor().newInstance() :
-						injector.getInstance(componentClazz);
-
-				if (conditionEvaluator.getStage() == targetStage) {
-					if (!conditionEvaluator.matches(context, annotation)) {
-						return false;
-					}
-				}
-			}
-		}
-		return true;
+		return Conditions.matches(componentClass, targetStage, context, injector);
 	}
 
 	protected void registerComponent(final WinterPlugin plugin, final Class<?> componentClass) throws Exception {
@@ -67,6 +55,10 @@ public abstract class AbstractProcessorModule implements ProcessorModule {
 	public boolean onLoad(final WinterPlugin plugin) throws Exception {
 		final var start = System.currentTimeMillis();
 		initWire(plugin);
+
+		// A reload scans the components again, the previous state must not leak into the new one.
+		activeComponents.clear();
+		enabledComponents.clear();
 
 		for (final var componentClass : wire.getWiredClasses()) {
 			final var loadContext = new ConditionContext(plugin, componentClass);
@@ -93,6 +85,7 @@ public abstract class AbstractProcessorModule implements ProcessorModule {
 
 			if (evaluateConditions(componentClass, Stage.ENABLE, enableContext, plugin.getInjector())) {
 				enableComponent(plugin, componentClass);
+				enabledComponents.add(componentClass);
 				enabledCount++;
 			} else {
 				plugin.getSLF4JLogger().debug("Skipped ENABLE (Condition failed) for {}", componentClass.getSimpleName());
@@ -108,12 +101,14 @@ public abstract class AbstractProcessorModule implements ProcessorModule {
 		final var start = System.currentTimeMillis();
 		var disabledCount = 0;
 
-		for (final var componentClass : activeComponents) {
+		// Only the components that were actually enabled are disabled: a component whose ENABLE conditions failed
+		// (or that was skipped because of them) was never started, so tearing it down is wrong.
+		for (final var componentClass : enabledComponents) {
 			disableComponent(plugin, componentClass);
 			disabledCount++;
 		}
 
-		activeComponents.clear();
+		enabledComponents.clear();
 		plugin.getSLF4JLogger().debug("Disabled {} {} components in {}ms", disabledCount, moduleAnnotation.getSimpleName(), System.currentTimeMillis() - start);
 		return true;
 	}

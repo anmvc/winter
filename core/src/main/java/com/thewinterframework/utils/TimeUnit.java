@@ -164,6 +164,11 @@ public enum TimeUnit implements TemporalUnit {
 	 */
 	FOREVER("Forever", Duration.ofSeconds(Long.MAX_VALUE, 999_999_999));
 
+	/**
+	 * The duration of a single tick, the base unit used by the Minecraft schedulers.
+	 */
+	private static final long MILLIS_PER_TICK = 50L;
+
 	private final String name;
 	private final Duration duration;
 
@@ -186,8 +191,35 @@ public enum TimeUnit implements TemporalUnit {
 		return duration;
 	}
 
+	/**
+	 * Converts the given amount of this unit into ticks (the unit used by the Minecraft scheduler).
+	 * <p>
+	 * The amount is rounded up, so a delay is never shorter than the requested one.
+	 *
+	 * @param amount the amount of this unit
+	 * @return the amount in ticks, clamped to {@link Long#MAX_VALUE}
+	 */
 	public long toTicks(final long amount) {
-		return (amount * duration.toMillis()) / 50;
+		if (amount == 0) {
+			return 0;
+		}
+
+		final long millis;
+		try {
+			millis = duration.toMillis();
+		} catch (final ArithmeticException e) {
+			// The unit is too large to be expressed in milliseconds, so it cannot be expressed in ticks either.
+			return amount > 0 ? Long.MAX_VALUE : Long.MIN_VALUE;
+		}
+
+		try {
+			final var ticks = Math.ceilDiv(Math.multiplyExact(amount, millis), MILLIS_PER_TICK);
+			// Units smaller than a tick (nanos, micros) are truncated to zero milliseconds, a delay must never
+			// become a no-op because of that.
+			return ticks == 0 ? (amount > 0 ? 1L : -1L) : ticks;
+		} catch (final ArithmeticException e) {
+			return amount > 0 ? Long.MAX_VALUE : Long.MIN_VALUE;
+		}
 	}
 
 	/**

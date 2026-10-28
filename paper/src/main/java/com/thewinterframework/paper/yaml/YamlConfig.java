@@ -10,6 +10,7 @@ import org.jetbrains.annotations.Nullable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.function.Supplier;
@@ -45,12 +46,26 @@ public final class YamlConfig extends YamlConfiguration {
 	 *                               exception occurs.
 	 */
 	public void load() {
-		if (!Files.exists(path) && resource != null) {
+		if (!Files.exists(path)) {
 			createParentDirs();
-			try (final var input = resource.get()) {
-				Files.copy(input, path);
-			} catch (final IOException e) {
-				throw new IllegalStateException("Failed to copy default configuration from resource to " + path, e);
+
+			// The resources of the plugin, the supplier returns null when the default file is not bundled.
+			final var defaultResource = resource == null ? null : resource.get();
+			if (defaultResource == null) {
+				// There is no default configuration, start from an empty file instead of failing.
+				try {
+					Files.createFile(path);
+				} catch (final FileAlreadyExistsException ignored) {
+					// Another thread created the file in the meantime, it will be read below.
+				} catch (final IOException e) {
+					throw new IllegalStateException("Failed to create the configuration file " + path, e);
+				}
+			} else {
+				try (final var input = defaultResource) {
+					Files.copy(input, path);
+				} catch (final IOException e) {
+					throw new IllegalStateException("Failed to copy default configuration from resource to " + path, e);
+				}
 			}
 		}
 

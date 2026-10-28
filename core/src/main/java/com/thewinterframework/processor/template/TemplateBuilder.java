@@ -3,6 +3,8 @@ package com.thewinterframework.processor.template;
 import com.thewinterframework.processor.context.ProcessorContext;
 
 import javax.annotation.processing.Filer;
+import javax.annotation.processing.FilerException;
+import javax.tools.Diagnostic;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -135,14 +137,25 @@ public final class TemplateBuilder {
 	}
 
 	public void write(final ProcessorContext ctx, final CharSequence name) {
-		write(ctx.filer(), name);
+		try {
+			write(ctx.filer(), name);
+		} catch (final RuntimeException e) {
+			if (!(e.getCause() instanceof FilerException)) {
+				throw e;
+			}
+
+			// The type already exists (it may be written by hand), generating it again would abort the
+			// compilation with an obscure error, a note is enough.
+			ctx.messager().printMessage(Diagnostic.Kind.NOTE, "Skipped generation of " + name + ", the source file already exists");
+		}
 	}
 
 	public void write(final Filer filer, final CharSequence fullyQualifiedName) {
+		final var content = render();
 		try {
 			final var file = filer.createSourceFile(fullyQualifiedName);
 			try (final var writer = file.openWriter()) {
-				writer.write(render());
+				writer.write(content);
 			}
 		} catch (final IOException e) {
 			throw new RuntimeException(e);

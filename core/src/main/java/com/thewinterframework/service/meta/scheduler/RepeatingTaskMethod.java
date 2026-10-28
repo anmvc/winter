@@ -29,37 +29,43 @@ public record RepeatingTaskMethod(
 		final var scheduler = plugin.getScheduler();
 		final var expressionResolver = plugin.getExpressionResolver();
 
-		final long delayParsed = requireNonNull(expressionResolver.resolve(delay, Long.class));
-		final long everyParsed = requireNonNull(expressionResolver.resolve(every, Long.class));
-		final var unitParsed = requireNonNull(expressionResolver.resolve(unit, TimeUnit.class));
-		final var asyncParsed = requireNonNull(expressionResolver.resolve(async, Boolean.class));
+		final var delayParsed = requireNonNull(
+				expressionResolver.resolve(delay, Long.class),
+				() -> "Could not resolve the delay of the repeating task of " + service.getName()
+		);
+		final var everyParsed = requireNonNull(
+				expressionResolver.resolve(every, Long.class),
+				() -> "Could not resolve the interval of the repeating task of " + service.getName()
+		);
+		final var unitParsed = requireNonNull(
+				expressionResolver.resolve(unit, TimeUnit.class),
+				() -> "Could not resolve the time unit '" + unit + "' of the repeating task of " + service.getName()
+		);
+		final var asyncParsed = requireNonNull(
+				expressionResolver.resolve(async, Boolean.class),
+				() -> "Could not resolve the async flag of the repeating task of " + service.getName()
+		);
 
-		if (asyncParsed) {
-			return scheduler.runAtFixedRateAsync(
-					() -> {
-						try {
-							method.invoke(service, plugin.getInjector());
-						} catch (final Throwable e) {
-							plugin.getSLF4JLogger().error("Error while executing repeating task", e);
-						}
-					},
-					delayParsed,
-					everyParsed,
-					unitParsed
-			);
+		if (delayParsed < 0) {
+			throw new IllegalArgumentException("The delay of a repeating task cannot be negative: " + delay);
 		}
 
-		return scheduler.runAtFixedRateSync(
-				() -> {
-					try {
-						method.invoke(service, plugin.getInjector());
-					} catch (final Throwable e) {
-						plugin.getSLF4JLogger().error("Error while executing repeating task", e);
-					}
-				},
-				delayParsed,
-				everyParsed,
-				unitParsed
-		);
+		if (everyParsed < 0) {
+			throw new IllegalArgumentException("The interval of a repeating task cannot be negative: " + every);
+		}
+
+		final Runnable task = () -> {
+			try {
+				method.invoke(service, plugin.getInjector());
+			} catch (final Throwable e) {
+				plugin.getSLF4JLogger().error("Error while executing repeating task", e);
+			}
+		};
+
+		if (asyncParsed) {
+			return scheduler.runAtFixedRateAsync(task, delayParsed, everyParsed, unitParsed);
+		}
+
+		return scheduler.runAtFixedRateSync(task, delayParsed, everyParsed, unitParsed);
 	}
 }

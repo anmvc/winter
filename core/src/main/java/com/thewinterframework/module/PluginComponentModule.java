@@ -1,10 +1,11 @@
 package com.thewinterframework.module;
 
 import com.google.inject.Binder;
-import com.google.inject.Scopes;
 import com.thewinterframework.module.annotation.ModuleComponent;
 import com.thewinterframework.plugin.WinterPlugin;
 import com.thewinterframework.plugin.module.PluginModule;
+import com.thewinterframework.plugin.module.Stage;
+import com.thewinterframework.wire.condition.context.ConditionContext;
 import com.thewinterframework.wire.module.AbstractProcessorModule;
 
 import java.util.ArrayList;
@@ -20,6 +21,7 @@ public class PluginComponentModule extends AbstractProcessorModule {
 		super(ModuleComponent.class);
 	}
 
+	@SuppressWarnings("unchecked")
 	@Override
 	public List<Class<? extends PluginModule>> depends(final WinterPlugin plugin) {
 		try {
@@ -27,7 +29,14 @@ public class PluginComponentModule extends AbstractProcessorModule {
 
 			final var depends = new ArrayList<Class<? extends PluginModule>>();
 			for (final var clazz : wire.getWiredClasses()) {
-				depends.add((Class<? extends PluginModule>) clazz);
+				// Components that are not active during the load stage must not be registered, otherwise
+				// their (optional) dependencies and their bindings would be loaded unconditionally.
+				final var context = new ConditionContext(plugin, clazz);
+				if (evaluateConditions(clazz, Stage.LOAD, context, null)) {
+					depends.add((Class<? extends PluginModule>) clazz);
+				} else {
+					plugin.getSLF4JLogger().debug("Skipped LOAD (Condition failed) for {}", clazz.getSimpleName());
+				}
 			}
 			return depends;
 		} catch (final Exception e) {
@@ -53,6 +62,5 @@ public class PluginComponentModule extends AbstractProcessorModule {
 
 	@Override
 	public void configure(final Binder binder) {
-		binder.bindScope(ModuleComponent.class, Scopes.SINGLETON);
 	}
 }

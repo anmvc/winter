@@ -21,6 +21,7 @@ import org.slf4j.Logger;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * A base class for Winter plugins that use Paper.
@@ -35,29 +36,91 @@ public abstract class PaperWinterPlugin extends JavaPlugin implements WinterPlug
 
 	protected @Inject Injector injector;
 
+	private boolean modulesLoaded;
+	private boolean enabled;
+	private boolean stopped;
+
 	@Override
 	public final void onLoad() {
 		final var startTime = System.currentTimeMillis();
-		if (!moduleManager.scanModules() || !moduleManager.loadModules()) {
-			Bukkit.getPluginManager().disablePlugin(this);
+		stopped = false;
+
+		try {
+			loadModules();
+		} catch (final RuntimeException | LinkageError e) {
+			getSLF4JLogger().error("Failed to load the plugin", e);
+			failFast(e);
+			return;
 		}
 
-		onPluginLoad();
 		getSLF4JLogger().info("Plugin loaded in {}ms", System.currentTimeMillis() - startTime);
+	}
+
+	/**
+	 * Scans and loads the Winter modules, this is only performed once per load cycle.
+	 *
+	 * @throws IllegalStateException if the modules cannot be loaded
+	 */
+	private void loadModules() {
+		if (modulesLoaded) {
+			return;
+		}
+
+		if (!moduleManager.scanModules() || !moduleManager.loadModules()) {
+			throw new IllegalStateException("Failed to load the Winter modules");
+		}
+
+		modulesLoaded = true;
+		onPluginLoad();
 	}
 
 	@Override
 	public final void onEnable() {
-		final var startTime = System.currentTimeMillis();
-		final var injector = createInjector();
-		injector.injectMembers(this);
-
-		if (!moduleManager.injectModules() || !moduleManager.enableModules()) {
-			Bukkit.getPluginManager().disablePlugin(this);
+		if (enabled) {
+			return;
 		}
 
-		onPluginEnable();
-		getSLF4JLogger().info("Plugin enabled in {}ms", System.currentTimeMillis() - startTime);
+		final var startTime = System.currentTimeMillis();
+		stopped = false;
+
+		try {
+			// The platform can enable a plugin without loading it again (for instance after a /reload), so the
+			// modules are loaded here too instead of failing when the load phase did not run.
+			loadModules();
+
+			injector = createInjector();
+			injector.injectMembers(this);
+
+			if (!moduleManager.injectModules() || !moduleManager.enableModules()) {
+				throw new IllegalStateException("Failed to enable the Winter modules");
+			}
+
+			enabled = true;
+			onPluginEnable();
+			getSLF4JLogger().info("Plugin enabled in {}ms", System.currentTimeMillis() - startTime);
+		} catch (final RuntimeException | LinkageError e) {
+			getSLF4JLogger().error("Failed to enable the plugin", e);
+			failFast(e);
+		}
+	}
+
+	/**
+	 * Releases everything that was already started and asks the platform to disable the plugin.
+	 *
+	 * @param failure the failure that triggered the shutdown, may be {@code null}
+	 */
+	private void failFast(final Throwable failure) {
+		try {
+			shutdown();
+		} catch (final RuntimeException | LinkageError cleanupFailure) {
+			if (failure != null) {
+				failure.addSuppressed(cleanupFailure);
+			} else {
+				getSLF4JLogger().error("Failed to release the plugin resources", cleanupFailure);
+			}
+		}
+
+		Bukkit.getPluginManager().disablePlugin(this);
 	}
 
 	protected Injector createInjector() {
@@ -66,12 +129,37 @@ public abstract class PaperWinterPlugin extends JavaPlugin implements WinterPlug
 
 	@Override
 	public final void onDisable() {
-		final var startTime = System.currentTimeMillis();
-		if (!moduleManager.disableModules()) {
-			Bukkit.getPluginManager().disablePlugin(this);
+		shutdown();
+	}
+
+	/**
+	 * Disables the loaded modules and releases every resource held by the plugin.
+	 * <p>
+	 * This method is idempotent, it is called both when the platform disables the plugin and when the enable
+	 * phase fails halfway through.
+	 */
+	private void shutdown() {
+		if (stopped) {
+			return;
 		}
 
-		onPluginDisable();
+		stopped = true;
+		final var startTime = System.currentTimeMillis();
+
+		try {
+			if (modulesLoaded && !moduleManager.disableModules()) {
+				getSLF4JLogger().error("Failed to disable the Winter modules");
+			}
+
+			modulesLoaded = false;
+			if (enabled) {
+				enabled = false;
+				onPluginDisable();
+			}
+		} finally {
+			scheduler.cancelAllTasks();
+		}
+
 		getSLF4JLogger().info("Plugin disabled in {}ms", System.currentTimeMillis() - startTime);
 	}
 
@@ -117,6 +205,9 @@ public abstract class PaperWinterPlugin extends JavaPlugin implements WinterPlug
 			binder.bind(Plugin.class).toInstance(this);
 			binder.bind(JavaPlugin.class).toInstance(this);
 			binder.bind(Logger.class).toInstance(this.getSLF4JLogger());
+			binder.bind(PluginScheduler.class).toInstance(scheduler);
+			binder.bind(PlatformPluginManager.class).toInstance(platformPluginManager);
+			binder.bind(ExpressionResolver.class).toInstance(expressionResolver);
 			binder.bind(Path.class).annotatedWith(DataFolder.class).toInstance(this.getDataFolder().toPath());
 		});
 
@@ -134,6 +225,8 @@ public abstract class PaperWinterPlugin extends JavaPlugin implements WinterPlug
 	@KeyPattern.Namespace
 	@SuppressWarnings("all") // lol
 	public @NotNull String namespace() {
-		return this.getName().toLowerCase();
+		// Locale.ROOT: a lowercase performed with the server locale can produce characters that are not valid
+		// inside an adventure key (for example the Turkish dotless i).
+		return this.getName().toLowerCase(Locale.ROOT);
 	}
 }

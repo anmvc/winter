@@ -1,6 +1,6 @@
 package com.thewinterframework.service.annotation.lifecycle;
 
-import com.thewinterframework.service.decorator.ServiceDecorator;
+import com.thewinterframework.component.decorator.ComponentDecorator;
 import com.thewinterframework.service.decorator.lifecycle.OnReloadDecoratorHandler;
 
 import java.lang.annotation.ElementType;
@@ -13,17 +13,17 @@ import java.lang.annotation.Target;
  */
 @Target({ElementType.METHOD})
 @Retention(RetentionPolicy.RUNTIME)
-@ServiceDecorator(OnReloadDecoratorHandler.class)
+@ComponentDecorator(OnReloadDecoratorHandler.class)
 public @interface OnReload {
 	/**
-	 * The priority of this method. The higher the priority, the earlier it will be executed
-	 * @return The priority of this method
+	 * The services whose reload methods must be executed before this method.
+	 * @return The services this method is executed after
 	 */
 	Class<?>[] after() default {};
 
 	/**
-	 * The priority of this method. The higher the priority, the earlier it will be executed
-	 * @return The priority of this method
+	 * The services whose reload methods must be executed after this method.
+	 * @return The services this method is executed before
 	 */
 	Class<?>[] before() default {};
 }
