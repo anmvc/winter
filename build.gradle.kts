@@ -7,7 +7,7 @@ plugins {
     signing
 }
 
-if (System.getenv("JITPACK") == "true" && !group.toString().endsWith(".${rootProject.name}")) {
+if (System.getenv("JITPACK") == "true" && group.toString().startsWith("com.github.") && !group.toString().endsWith(".${rootProject.name}")) {
     group = "${group}.${rootProject.name}"
 }
 
