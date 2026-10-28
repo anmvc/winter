@@ -200,7 +200,7 @@ public abstract class VelocityWinterPlugin implements WinterPlugin {
 	 * @return the annotated plugin ID, if the class declares one
 	 */
 	private Optional<String> annotatedPluginId() {
-		for (var type = getClass(); type != null && type != Object.class; type = type.getSuperclass()) {
+		for (Class<?> type = getClass(); type != null && type != Object.class; type = type.getSuperclass()) {
 			final var annotation = type.getAnnotation(Plugin.class);
 
 			if (annotation != null && !annotation.id().isBlank()) {
