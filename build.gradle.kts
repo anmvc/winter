@@ -1,5 +1,3 @@
-import org.gradle.external.javadoc.StandardJavadocDocletOptions
-
 plugins {
     id("java")
     id("maven-publish")
@@ -7,11 +5,7 @@ plugins {
     signing
 }
 
-if (System.getenv("JITPACK") == "true" && group.toString().startsWith("com.github.") && !group.toString().endsWith(".${rootProject.name}")) {
-    group = "${group}.${rootProject.name}"
-}
-
-val catalog = libs
+val javaVersion = 21
 
 subprojects {
     group = rootProject.group
@@ -21,24 +15,27 @@ subprojects {
     apply(plugin = "io.deepmedia.tools.deployer")
 
     java {
+        toolchain {
+            languageVersion.set(JavaLanguageVersion.of(javaVersion))
+        }
         withJavadocJar()
         withSourcesJar()
     }
 
-    dependencies {
-        testImplementation(catalog.junit.api)
-        testRuntimeOnly(catalog.junit.engine)
-        testRuntimeOnly(catalog.junit.platform.launcher)
+    tasks.compileJava {
+        options.encoding = "UTF-8"
+        options.release.set(javaVersion)
+        options.compilerArgs.add("-parameters")
+    }
+
+    tasks.compileTestJava {
+        options.encoding = "UTF-8"
+        options.release.set(javaVersion)
+        options.compilerArgs.add("-parameters")
     }
 
     tasks.withType<Test>().configureEach {
         useJUnitPlatform()
-    }
-
-    tasks.withType<Javadoc>().configureEach {
-        options.encoding = "UTF-8"
-        options.quiet()
-        (options as StandardJavadocDocletOptions).addBooleanOption("Xdoclint:none", true)
     }
 
     deployer {
@@ -76,4 +73,3 @@ subprojects {
 repositories {
     mavenCentral()
 }
-

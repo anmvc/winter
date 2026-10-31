@@ -32,8 +32,10 @@ dependencies {
     // Expression Language
     implementation(libs.commons.jexl3)
 
-    // Tests: the dependencies above are compile-only, so they must be on the test runtime classpath as well
-    // to be able to exercise the classes using them.
+    // Tests
+    testImplementation(libs.junit.api)
+    testRuntimeOnly(libs.junit.engine)
+    testRuntimeOnly(libs.junit.platform.launcher)
     testImplementation(libs.adventure)
     testImplementation(libs.minimessage)
     testImplementation(libs.kyori.text)
@@ -41,17 +43,6 @@ dependencies {
     testImplementation(libs.guava)
     testImplementation(libs.commons.jexl3)
     testImplementation("org.slf4j:slf4j-api:1.7.29")
-}
-
-java {
-    toolchain {
-        languageVersion.set(JavaLanguageVersion.of(21))
-    }
-}
-
-tasks.withType<JavaCompile> {
-    options.encoding = "UTF-8"
-    options.compilerArgs.add("-parameters")
 }
 
 tasks.test {
