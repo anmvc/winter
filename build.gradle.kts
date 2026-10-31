@@ -16,7 +16,7 @@ subprojects {
 
     java {
         toolchain {
-            languageVersion.set(JavaLanguageVersion.of(javaVersion))
+            languageVersion.set(JavaLanguageVersion.of(21))
         }
         withJavadocJar()
         withSourcesJar()
